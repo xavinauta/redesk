@@ -315,6 +315,25 @@ prueba('multilinea_ conserva los saltos de las especificaciones', () => {
   assert.strictEqual(sandbox.multilinea_('a <b>x</b>'), 'a &lt;b&gt;x&lt;/b&gt;');
 });
 
+prueba('dist/ está al día respecto de src/', () => {
+  // dist/ es lo que se pega en Apps Script; si queda atrás, se instala una
+  // versión vieja sin que nadie lo note.
+  const dist = path.join(__dirname, '..', 'dist');
+  if (!fs.existsSync(dist)) {
+    throw new Error('falta dist/. Ejecuta: node tools/empaquetar.js');
+  }
+  const paquete = fs.readFileSync(path.join(dist, 'Codigo.gs'), 'utf8');
+  ARCHIVOS.forEach((f) => {
+    const modulo = fs.readFileSync(path.join(SRC, f), 'utf8').trimEnd();
+    assert.ok(paquete.includes(modulo),
+      `${f} cambió sin regenerar dist/. Ejecuta: node tools/empaquetar.js`);
+  });
+  assert.strictEqual(
+    fs.readFileSync(path.join(dist, 'plantilla.html'), 'utf8'),
+    fs.readFileSync(path.join(SRC, 'plantilla.html'), 'utf8'),
+    'plantilla.html cambió sin regenerar dist/');
+});
+
 prueba('los bloques de plantilla.html están balanceados', () => {
   const html = fs.readFileSync(path.join(SRC, 'plantilla.html'), 'utf8');
   const abre = (html.match(/<\?\s*(?:if|for)\b/g) || []).length;

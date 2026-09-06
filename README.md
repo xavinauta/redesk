@@ -40,7 +40,21 @@ subcarpetas junto a este archivo.
 
 ### 2. Subir el código
 
-**Opción A — con `clasp` (recomendada, mantiene el repo sincronizado)**
+**Opción A — copiar y pegar (sin instalar nada)**
+
+`dist/` trae todo el proyecto en tres archivos, para no tener que copiar los
+ocho módulos de `src/` uno por uno:
+
+| Pegar | En |
+|---|---|
+| `dist/Codigo.gs` | El archivo `Código.gs` que ya existe en el editor |
+| `dist/plantilla.html` | Un archivo HTML nuevo llamado exactamente `plantilla` |
+| `dist/appsscript.json` | El manifiesto (hay que mostrarlo primero en Configuración del proyecto) |
+
+El nombre `plantilla` importa: el generador de PDF busca el archivo por ese
+nombre.
+
+**Opción B — con `clasp` (mantiene el repo sincronizado)**
 
 ```bash
 npm install -g @google/clasp
@@ -53,15 +67,10 @@ cp .clasp.json.example .clasp.json
 clasp push
 ```
 
-**Opción B — copiando y pegando**
+`clasp` sube `src/` directamente; `dist/` no interviene.
 
-En la hoja, `Extensiones ▸ Apps Script`. Crea un archivo por cada uno de
-`src/*.js` (en el editor se llamarán `.gs`) y uno de tipo HTML llamado
-`plantilla`. **Los nombres deben coincidir**: el generador de PDF busca el
-archivo `plantilla`.
-
-También pega el contenido de `src/appsscript.json` en el manifiesto
-(`Configuración del proyecto ▸ Mostrar "appsscript.json"`).
+> `dist/` se regenera con `node tools/empaquetar.js`, y `npm test` lo
+> regenera y comprueba que no haya quedado atrás respecto de `src/`.
 
 ### 3. Activar la API de Drive
 
@@ -197,7 +206,12 @@ assets/
   logo-redesk.png          logo, para subir a Drive
   marcas.png               franja de marcas compuesta
   marcas/                  cada logo suelto
+dist/                      generado; lo que se pega en Apps Script
+  Codigo.gs                los ocho módulos de src/ concatenados
+  plantilla.html
+  appsscript.json
 tools/
+  empaquetar.js            regenera dist/ desde src/
   previsualizar.js         renderiza la plantilla sin desplegar
   componer_marcas.py       recompone assets/marcas.png
 test/
@@ -207,7 +221,7 @@ test/
 ## Pruebas y previsualización
 
 ```bash
-npm test                    # 21 pruebas de lógica
+npm test                    # regenera dist/ y corre 25 pruebas
 node tools/previsualizar.js # escribe previsualizacion.png
 ```
 
