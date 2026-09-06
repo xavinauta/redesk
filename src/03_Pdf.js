@@ -7,18 +7,34 @@
 /** Punto de entrada del menú REDESK ▸ Generar PDF. */
 function generarPdf() {
   const c = leerCotizacion_();
-  const archivo = generarPdfDeCotizacion_(c);
-  registrarEnHistorial_(c, archivo.getUrl(), 'Borrador');
+  const resultado = generarPdfDeCotizacion_(c);
+  registrarEnHistorial_(c, resultado.archivo.getUrl(), 'Borrador');
 
-  const ui = SpreadsheetApp.getUi();
   const html = HtmlService.createHtmlOutput(
-    '<p style="font-family:Arial,sans-serif;font-size:13px">' +
-    'PDF generado y guardado en Drive:</p>' +
-    '<p style="font-family:Arial,sans-serif;font-size:13px">' +
-    '<a href="' + archivo.getUrl() + '" target="_blank">' +
-    escaparHtml_(archivo.getName()) + '</a></p>')
-    .setWidth(420).setHeight(140);
-  ui.showModalDialog(html, 'Proforma ' + c.numero);
+    '<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.6">' +
+    '<p>PDF generado y guardado en Drive:</p>' +
+    '<p><a href="' + resultado.archivo.getUrl() + '" target="_blank">' +
+    escaparHtml_(resultado.archivo.getName()) + '</a></p>' +
+    avisoHtml_(resultado.aviso) +
+    '</div>').setWidth(460).setHeight(resultado.aviso ? 260 : 150);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Proforma ' + c.numero);
+}
+
+/**
+ * Recuadro de advertencia para los diálogos, o cadena vacía si no hay nada
+ * que advertir.
+ *
+ * Cuando la conversión vía Documento falla se emite igual el PDF, pero sin
+ * imágenes. Sin este aviso el fallo pasa inadvertido: el documento parece
+ * correcto y sólo falta el logo.
+ *
+ * @param {string} aviso
+ * @return {string}
+ */
+function avisoHtml_(aviso) {
+  if (!aviso) return '';
+  return '<p style="background:#FBECEC;border-left:3px solid #C4161C;' +
+    'padding:8px 12px;margin-top:12px">' + escaparHtml_(aviso) + '</p>';
 }
 
 /**
@@ -27,16 +43,21 @@ function generarPdf() {
  * dejar versiones sueltas conviviendo.
  *
  * @param {!Object} c cotización leída con leerCotizacion_()
- * @return {!GoogleAppsScript.Drive.File}
+ * @return {{archivo: !GoogleAppsScript.Drive.File, motor: string,
+ *           aviso: string}}
  */
 function generarPdfDeCotizacion_(c) {
-  const blob = construirBlobPdf_(c);
+  const salida = construirBlobPdf_(c);
   const carpeta = carpetaCotizaciones_();
 
-  const existentes = carpeta.getFilesByName(blob.getName());
+  const existentes = carpeta.getFilesByName(salida.blob.getName());
   while (existentes.hasNext()) existentes.next().setTrashed(true);
 
-  return carpeta.createFile(blob);
+  return {
+    archivo: carpeta.createFile(salida.blob),
+    motor: salida.motor,
+    aviso: salida.aviso,
+  };
 }
 
 /** Marcas de posición que la plantilla deja donde va cada imagen. */
@@ -58,22 +79,54 @@ const MARCA_IMAGEN = {
  * documento sin imágenes antes que no producir nada.
  *
  * @param {!Object} c
- * @return {!GoogleAppsScript.Base.Blob}
+ * @return {{blob: !GoogleAppsScript.Base.Blob, motor: string, aviso: string}}
  */
 function construirBlobPdf_(c) {
   const nombre = nombreArchivo_(c);
-  const imagenes = imagenesDeCotizacion_(c.cfg);
+  const pedido = String(c.cfg.MOTOR_PDF || 'DOCS').toUpperCase();
+  let aviso = '';
 
-  if (String(c.cfg.MOTOR_PDF || 'DOCS').toUpperCase() !== 'HTML') {
+  if (pedido !== 'HTML') {
+    const imagenes = imagenesDeCotizacion_(c.cfg);
+    const sinConfigurar = imagenesSinConfigurar_(c.cfg);
     try {
-      return pdfViaDocumento_(renderizarPlantilla_(c, imagenes), imagenes, nombre);
+      const blob = pdfViaDocumento_(
+        renderizarPlantilla_(c, imagenes), imagenes, nombre);
+      return {
+        blob: blob,
+        motor: 'DOCS',
+        aviso: sinConfigurar.length
+          ? 'El PDF salió sin ' + sinConfigurar.join(', ') +
+            ': falta su ID en la hoja Config.'
+          : '',
+      };
     } catch (err) {
-      console.error('No pude convertir vía Documento de Google, uso ' +
-        'HtmlService y el PDF saldrá sin imágenes: ' + err);
+      aviso = 'No se pudo convertir vía Documento de Google, así que el PDF ' +
+        'salió SIN logo, firma ni marcas. Detalle: ' +
+        (err && err.message ? err.message : err);
+      console.error(aviso);
     }
   }
+
   // Sin marcas de imagen: HtmlService las imprimiría como texto suelto.
-  return pdfViaHtmlService_(renderizarPlantilla_(c, {}), nombre);
+  return {
+    blob: pdfViaHtmlService_(renderizarPlantilla_(c, {}), nombre),
+    motor: 'HTML',
+    aviso: aviso,
+  };
+}
+
+/**
+ * Nombres de las imágenes que la plantilla espera y Config no tiene.
+ * @param {!Object<string, *>} cfg
+ * @return {!Array<string>}
+ */
+function imagenesSinConfigurar_(cfg) {
+  const faltan = [];
+  if (!String(cfg.LOGO_ARCHIVO_ID || '').trim()) faltan.push('logo');
+  if (!String(cfg.FIRMA_ARCHIVO_ID || '').trim()) faltan.push('firma');
+  if (!String(cfg.MARCAS_ARCHIVO_ID || '').trim()) faltan.push('marcas');
+  return faltan;
 }
 
 /**
@@ -100,7 +153,8 @@ function renderizarPlantilla_(c, imagenes) {
 function pdfViaDocumento_(html, imagenes, nombre) {
   const temporal = subcarpeta_(carpetaCotizaciones_(), '_temp');
   const contenido = Utilities.newBlob(html, MimeType.HTML, nombre + '.html');
-  const idDoc = crearDocDesdeBlob_(contenido, 'tmp ' + nombre, temporal.getId());
+  const idDoc = crearDocDesdeBlob_(
+    contenido, 'tmp ' + nombre, temporal.getId(), { v2: { convert: true } });
 
   try {
     prepararDocumento_(idDoc, imagenes);
@@ -130,7 +184,10 @@ function prepararDocumento_(idDoc, imagenes) {
   cuerpo.setAttributes(atributosSinEspaciado_());
 
   Object.keys(imagenes).forEach(function (clave) {
-    insertarImagen_(cuerpo, imagenes[clave]);
+    if (!insertarImagen_(cuerpo, imagenes[clave])) {
+      console.error('No encontré la marca ' + imagenes[clave].marca +
+        ' en el documento convertido: esa imagen no saldrá.');
+    }
   });
 
   doc.saveAndClose();
@@ -151,13 +208,14 @@ function atributosSinEspaciado_() {
  * Sustituye una marca de posición por su imagen, a lo ancho indicado.
  * @param {!GoogleAppsScript.Document.Body} cuerpo
  * @param {{marca: string, blob: !GoogleAppsScript.Base.Blob, ancho: number}} img
+ * @return {boolean} si se pudo insertar
  */
 function insertarImagen_(cuerpo, img) {
   const hallazgo = cuerpo.findText(escaparBusqueda_(img.marca));
-  if (!hallazgo) return;
+  if (!hallazgo) return false;
 
   const parrafo = parrafoContenedor_(hallazgo.getElement());
-  if (!parrafo) return;
+  if (!parrafo) return false;
 
   parrafo.clear();
   const insertada = parrafo.appendInlineImage(img.blob);
@@ -167,6 +225,7 @@ function insertarImagen_(cuerpo, img) {
     insertada.setWidth(img.ancho);
     insertada.setHeight(Math.round(alto * img.ancho / ancho));
   }
+  return true;
 }
 
 /**

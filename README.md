@@ -256,7 +256,13 @@ Lo que depende de Sheets, Drive y Gmail se prueba ejecutando el menú.
   `HtmlService` deja el icono de imagen rota en su lugar.
   `Config ▸ MOTOR_PDF` permite forzar `HTML` (más fiel a la maquetación, pero
   sin logo ni firma); si la conversión vía Documento falla, se recurre a él
-  automáticamente.
+  automáticamente **y el diálogo lo dice**: un PDF sin logo se parece
+  demasiado a uno correcto como para dejar que el fallo pase inadvertido.
+- **La v2 y la v3 de Drive interpretan al revés el `mimeType` del recurso.**
+  En la v3 describe el destino y es lo que pide la conversión; en la v2
+  describe el origen, y declarar ahí el de Documento hace que la API rechace
+  el OCR. Por eso la petición se arma distinta en cada versión, y hay
+  pruebas que fijan las dos formas.
 - **Al editar `plantilla.html`, los estilos van en línea.** El importador de
   HTML de Documentos ignora las clases de un bloque `<style>`, así que cada
   elemento lleva su `style="..."`. Y donde va una imagen se escribe su marca

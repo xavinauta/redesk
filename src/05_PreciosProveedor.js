@@ -93,6 +93,8 @@ function importarPreciosProveedor() {
  * @return {{v2: !Object, v3: !Object}}
  */
 function opcionesOcr_() {
+  // Sin convert: en la v2, para una imagen o un PDF es el propio ocr el que
+  // produce el Documento de Google.
   return {
     v2: { ocr: true, ocrLanguage: 'es' },
     v3: { ocrLanguage: 'es' },

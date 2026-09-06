@@ -219,13 +219,14 @@ prueba('crearDocDesdeBlob_ usa los campos de Drive v2', () => {
   assert.strictEqual(id, 'DOC_V2');
   assert.strictEqual(llamadas.length, 1, 'v2 responde: no se prueba v3');
   assert.strictEqual(llamadas[0].metodo, 'insert');
+  // El mimeType del recurso describe el ORIGEN en la v2: declarar aquí el
+  // de Documento hace que rechace el OCR.
   igual(llamadas[0].recurso, {
     title: 'OCR lista.jpg',
-    mimeType: 'application/vnd.google-apps.document',
     parents: [{ id: 'CARPETA1' }],
   });
   igual(llamadas[0].opciones, {
-    convert: true, supportsAllDrives: true, ocr: true, ocrLanguage: 'es',
+    supportsAllDrives: true, ocr: true, ocrLanguage: 'es',
   });
 });
 
@@ -262,10 +263,37 @@ prueba('crearDocDesdeBlob_ informa de los dos intentos si ambos fallan', () => {
     });
 });
 
-prueba('crearDocDesdeBlob_ sin opciones de OCR no las inventa', () => {
+prueba('crearDocDesdeBlob_ sin opciones no inventa ninguna', () => {
   const llamadas = espiarDrive({});
   sandbox.crearDocDesdeBlob_({}, 'tmp proforma', 'CARPETA1');
-  igual(llamadas[0].opciones, { convert: true, supportsAllDrives: true });
+  igual(llamadas[0].opciones, { supportsAllDrives: true });
+});
+
+prueba('convertir un HTML pide convert en la v2, no OCR', () => {
+  const llamadas = espiarDrive({});
+  sandbox.crearDocDesdeBlob_(
+    {}, 'tmp proforma', 'CARPETA1', { v2: { convert: true } });
+  igual(llamadas[0].opciones, { supportsAllDrives: true, convert: true });
+  assert.strictEqual(llamadas[0].recurso.mimeType, undefined);
+});
+
+prueba('imagenesSinConfigurar_ nombra las que faltan en Config', () => {
+  igual(sandbox.imagenesSinConfigurar_({}), ['logo', 'firma', 'marcas']);
+  igual(
+    sandbox.imagenesSinConfigurar_(
+      { LOGO_ARCHIVO_ID: 'A', MARCAS_ARCHIVO_ID: 'B', FIRMA_ARCHIVO_ID: '  ' }),
+    ['firma'], 'un ID en blanco cuenta como ausente');
+  igual(
+    sandbox.imagenesSinConfigurar_(
+      { LOGO_ARCHIVO_ID: 'A', FIRMA_ARCHIVO_ID: 'B', MARCAS_ARCHIVO_ID: 'C' }),
+    []);
+});
+
+prueba('avisoHtml_ sólo pinta el recuadro cuando hay algo que advertir', () => {
+  assert.strictEqual(sandbox.avisoHtml_(''), '');
+  const html = sandbox.avisoHtml_('El PDF salió sin logo');
+  assert.ok(html.includes('El PDF salió sin logo'));
+  assert.ok(html.includes('#C4161C'), 'debe destacarse en rojo');
 });
 
 prueba('el manifiesto declara una versión de Drive que el código sabe armar', () => {

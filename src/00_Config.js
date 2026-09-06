@@ -281,8 +281,7 @@ function conVersionDrive_(operacion) {
 }
 
 /**
- * Sube un contenido a Drive convirtiéndolo en Documento de Google y devuelve
- * el ID del documento creado.
+ * Sube un contenido a Drive como Documento de Google y devuelve su ID.
  *
  * Se sube el contenido en vez de copiar el archivo de origen porque copiar
  * con conversión sólo existe en la v2, y porque el servicio avanzado no
@@ -290,16 +289,19 @@ function conVersionDrive_(operacion) {
  * da un "File not found" desconcertante.
  *
  * @param {!GoogleAppsScript.Base.Blob} contenido
- * @param {string} nombre nombre del documento intermedio
+ * @param {string} nombre nombre del documento resultante
  * @param {string} idCarpeta carpeta donde dejarlo
- * @param {{v2: (!Object|undefined), v3: (!Object|undefined)}=} extra
- *     parámetros propios de cada versión, por ejemplo los de OCR
+ * @param {{v2: (!Object|undefined), v3: (!Object|undefined)}=} opciones
+ *     parámetros propios de cada versión: {convert:true} para convertir un
+ *     HTML, {ocr:true, ocrLanguage:'es'} para reconocer texto de una imagen
  * @return {string} ID del documento creado
  */
-function crearDocDesdeBlob_(contenido, nombre, idCarpeta, extra) {
-  const propios = extra || {};
+function crearDocDesdeBlob_(contenido, nombre, idCarpeta, opciones) {
+  const propias = opciones || {};
   return conVersionDrive_(function (version) {
     if (version === 'v3') {
+      // En la v3 el mimeType del recurso describe el DESTINO y es lo que
+      // pide la conversión.
       return Drive.Files.create(
         {
           name: nombre,
@@ -307,31 +309,20 @@ function crearDocDesdeBlob_(contenido, nombre, idCarpeta, extra) {
           parents: [idCarpeta],
         },
         contenido,
-        Object.assign({ supportsAllDrives: true }, propios.v3 || {})).id;
+        Object.assign({ supportsAllDrives: true }, propias.v3 || {})).id;
     }
+    // En la v2 el mimeType del recurso describe el ORIGEN. Declarar aquí el
+    // de Documento hace que la API rechace el OCR con "OCR is not supported
+    // for files of type application/vnd.google-apps.document": la conversión
+    // la piden los parámetros, no el recurso.
     return Drive.Files.insert(
       {
         title: nombre,
-        mimeType: MimeType.GOOGLE_DOCS,
         parents: [{ id: idCarpeta }],
       },
       contenido,
-      Object.assign({ convert: true, supportsAllDrives: true },
-        propios.v2 || {})).id;
+      Object.assign({ supportsAllDrives: true }, propias.v2 || {})).id;
   });
-}
-
-/**
- * Manda un archivo a la papelera sin romper el flujo si no se puede.
- * @param {?string} id
- */
-function descartar_(id) {
-  if (!id) return;
-  try {
-    DriveApp.getFileById(id).setTrashed(true);
-  } catch (err) {
-    console.error('No pude descartar el archivo temporal ' + id + ': ' + err);
-  }
 }
 
 /** Separador detectado, cacheado durante la ejecución. */

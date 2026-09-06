@@ -244,7 +244,8 @@ function generarPdfYBorrador() {
       'cliente no tiene correo en la hoja Clientes.');
   }
 
-  const archivo = generarPdfDeCotizacion_(c);
+  const resultado = generarPdfDeCotizacion_(c);
+  const archivo = resultado.archivo;
   const adjunto = archivo.getBlob();
   const cuerpo = cuerpoCorreo_(c);
   const opciones = {
@@ -280,7 +281,8 @@ function generarPdfYBorrador() {
     '<p>Borrador creado con el PDF adjunto. <b>No se envió nada.</b></p>' +
     '<p><a href="' + url + '" target="_blank">Revisar y enviar en Gmail</a><br>' +
     '<a href="' + archivo.getUrl() + '" target="_blank">Ver el PDF</a></p>' +
-    '</div>').setWidth(420).setHeight(180);
+    avisoHtml_(resultado.aviso) +
+    '</div>').setWidth(460).setHeight(resultado.aviso ? 300 : 190);
   SpreadsheetApp.getUi().showModalDialog(html, 'Cotización ' + c.numero);
 }
 
