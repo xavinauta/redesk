@@ -30,13 +30,24 @@ function nuevaCotizacion() {
 
   h.getRange(COT.FILA_NUMERO, COT.COL_VALOR).setValue(numero);
   h.getRange(COT.FILA_FECHA, COT.COL_VALOR).setValue(new Date());
-  h.getRange(COT.FILA_ENTREGA, COT.COL_VALOR).setValue(cfg.TIEMPO_ENTREGA || '');
-  h.getRange(COT.FILA_PAGO, COT.COL_VALOR).setValue(cfg.FORMA_PAGO || '');
-  h.getRange(COT.FILA_VALIDEZ, COT.COL_VALOR).setValue(cfg.VALIDEZ_DIAS || 8);
+  aplicarCondicionesPorDefecto_(h, cfg);
 
   libro_().setActiveSheet(h);
   h.setActiveSelection(h.getRange(COT.FILA_CLIENTE, COT.COL_VALOR));
-  aviso_('Cotización ' + numero + ' lista. Elige el cliente.');
+  aviso_('Proforma ' + numero + ' lista. Elige el cliente.');
+}
+
+/**
+ * Rellena asesor y condiciones comerciales con los valores de Config.
+ * @param {!GoogleAppsScript.Spreadsheet.Sheet} h
+ * @param {!Object<string, *>} cfg
+ */
+function aplicarCondicionesPorDefecto_(h, cfg) {
+  h.getRange(COT.FILA_ASESOR, COT.COL_VALOR).setValue(cfg.ASESOR || '');
+  h.getRange(COT.FILA_NOTAS, COT.COL_VALOR).setValue(cfg.NOTAS || '');
+  h.getRange(COT.FILA_PAGO, COT.COL_VALOR).setValue(cfg.PAGO || '');
+  h.getRange(COT.FILA_GARANTIA, COT.COL_VALOR).setValue(cfg.GARANTIA || '');
+  h.getRange(COT.FILA_VALIDEZ, COT.COL_VALOR).setValue(cfg.VALIDEZ || '');
 }
 
 /**
@@ -45,18 +56,18 @@ function nuevaCotizacion() {
  */
 function limpiarFormulario_(h) {
   [
-    COT.FILA_NUMERO, COT.FILA_FECHA, COT.FILA_CLIENTE, COT.FILA_REFERENCIA,
-    COT.FILA_ENTREGA, COT.FILA_PAGO, COT.FILA_VALIDEZ,
-    COT.FILA_OBSERVACIONES, COT.FILA_HILO,
+    COT.FILA_NUMERO, COT.FILA_FECHA, COT.FILA_CLIENTE, COT.FILA_ASUNTO,
+    COT.FILA_ASESOR, COT.FILA_NOTAS, COT.FILA_PAGO, COT.FILA_GARANTIA,
+    COT.FILA_VALIDEZ, COT.FILA_HILO,
   ].forEach(function (fila) {
     h.getRange(fila, COT.COL_VALOR).clearContent();
   });
 
   const n = COT.FILA_ULTIMO_ITEM - COT.FILA_PRIMER_ITEM + 1;
   // Columnas B a G: las que escribe la persona. # y Total son fórmulas y se
-  // conservan. El descuento entra aquí: si no, arrastraría al de la
-  // cotización anterior.
-  const anchoEditable = COT.COL_DESCUENTO - COT.COL_CODIGO + 1;
+  // conservan. La observación entra aquí: si no, arrastraría el tiempo de
+  // entrega de la proforma anterior.
+  const anchoEditable = COT.COL_OBSERVACION - COT.COL_CODIGO + 1;
   h.getRange(COT.FILA_PRIMER_ITEM, COT.COL_CODIGO, n, anchoEditable)
     .clearContent();
 }
@@ -91,9 +102,11 @@ function onEdit(e) {
     }
 
     h.getRange(fila, COT.COL_CODIGO).clearNote();
+    h.getRange(fila, COT.COL_TIPO).setValue(item.tipo);
     h.getRange(fila, COT.COL_DESCRIPCION).setValue(item.descripcion);
-    h.getRange(fila, COT.COL_MARCA).setValue(item.marca);
     h.getRange(fila, COT.COL_PUNITARIO).setValue(item.pvp);
+    h.getRange(fila, COT.COL_OBSERVACION).setValue(
+      item.entrega || String(leerConfig().OBSERVACION_DEFECTO || ''));
     if (!h.getRange(fila, COT.COL_CANTIDAD).getValue()) {
       h.getRange(fila, COT.COL_CANTIDAD).setValue(1);
     }
@@ -121,20 +134,35 @@ function buscarEnCatalogo_(codigo) {
   for (let i = 0; i < codigos.length; i++) {
     if (String(codigos[i][0]).trim().toLowerCase() !== buscado) continue;
     const f = h.getRange(i + 2, 1, 1, CAT.ULTIMA).getValues()[0];
-    const modelo = String(f[CAT.MODELO - 1] || '').trim();
-    let descripcion = String(f[CAT.DESCRIPCION - 1] || '').trim();
-    if (modelo && descripcion.indexOf(modelo) === -1) {
-      descripcion = descripcion ? descripcion + ' (P/N: ' + modelo + ')' : modelo;
-    }
     return {
-      descripcion: descripcion,
-      marca: String(f[CAT.MARCA - 1] || '').trim(),
+      tipo: String(f[CAT.CATEGORIA - 1] || '').trim(),
+      descripcion: descripcionDeItem_(
+        String(f[CAT.MARCA - 1] || ''),
+        String(f[CAT.MODELO - 1] || ''),
+        String(f[CAT.DESCRIPCION - 1] || '')),
       pvp: Number(f[CAT.PVP - 1]) || 0,
       entrega: String(f[CAT.ENTREGA - 1] || '').trim(),
       garantia: String(f[CAT.GARANTIA - 1] || '').trim(),
     };
   }
   return null;
+}
+
+/**
+ * Arma la descripción tal como aparece en la proforma: una primera línea con
+ * la marca y el número de parte, y debajo las especificaciones.
+ *
+ *   DELL        DELCOMPORY5C5C
+ *   COMPUTADOR PORTATIL DELL PRO 14 SILVER Y5C5C 14PULG FHD ULTRA 5 235U…
+ *
+ * @param {string} marca
+ * @param {string} modelo
+ * @param {string} descripcion
+ * @return {string}
+ */
+function descripcionDeItem_(marca, modelo, descripcion) {
+  const cabecera = [marca.trim(), modelo.trim()].filter(Boolean).join('        ');
+  return [cabecera, descripcion.trim()].filter(Boolean).join('\n');
 }
 
 /**
@@ -153,7 +181,7 @@ function leerCotizacion_() {
   const numero = v(COT.FILA_NUMERO);
   if (!numero) {
     throw new Error(
-      'La cotización no tiene número. Usa REDESK ▸ Nueva cotización.');
+      'La proforma no tiene número. Usa REDESK ▸ Nueva cotización.');
   }
   const cliente = v(COT.FILA_CLIENTE);
   if (!cliente) throw new Error('Falta elegir el cliente.');
@@ -168,15 +196,15 @@ function leerCotizacion_() {
       n: items.length + 1,
       codigo: String(f[COT.COL_CODIGO - 1] || '').trim(),
       cantidad: Number(f[COT.COL_CANTIDAD - 1]) || 0,
+      tipo: String(f[COT.COL_TIPO - 1] || '').trim(),
       descripcion: descripcion,
-      marca: String(f[COT.COL_MARCA - 1] || '').trim(),
       punitario: Number(f[COT.COL_PUNITARIO - 1]) || 0,
-      descuento: Number(f[COT.COL_DESCUENTO - 1]) || 0,
+      observacion: String(f[COT.COL_OBSERVACION - 1] || '').trim(),
       total: Number(f[COT.COL_TOTAL - 1]) || 0,
     });
   });
 
-  if (!items.length) throw new Error('La cotización no tiene ítems.');
+  if (!items.length) throw new Error('La proforma no tiene ítems.');
 
   const sinPrecio = items.filter(function (i) { return i.punitario <= 0; });
   if (sinPrecio.length) {
@@ -204,14 +232,15 @@ function leerCotizacion_() {
     fechaTexto: fecha_(fecha),
     cliente: cliente,
     datosCliente: buscarCliente_(cliente),
-    contacto: v(COT.FILA_CONTACTO),
+    atte: v(COT.FILA_ATTE),
     email: v(COT.FILA_EMAIL),
     cc: v(COT.FILA_CC),
-    referencia: v(COT.FILA_REFERENCIA),
-    entrega: v(COT.FILA_ENTREGA) || String(cfg.TIEMPO_ENTREGA || ''),
-    pago: v(COT.FILA_PAGO) || String(cfg.FORMA_PAGO || ''),
-    validez: v(COT.FILA_VALIDEZ) || String(cfg.VALIDEZ_DIAS || 8),
-    observaciones: v(COT.FILA_OBSERVACIONES),
+    asunto: v(COT.FILA_ASUNTO),
+    asesor: v(COT.FILA_ASESOR) || String(cfg.ASESOR || ''),
+    notas: v(COT.FILA_NOTAS),
+    pago: v(COT.FILA_PAGO) || String(cfg.PAGO || ''),
+    garantia: v(COT.FILA_GARANTIA) || String(cfg.GARANTIA || ''),
+    validez: v(COT.FILA_VALIDEZ) || String(cfg.VALIDEZ || ''),
     hilo: v(COT.FILA_HILO),
     items: items,
     subtotal: Number(subtotal) || 0,
@@ -219,7 +248,6 @@ function leerCotizacion_() {
     total: Number(total) || 0,
     ivaPct: Number(cfg.IVA_PCT) || 0,
     moneda: String(cfg.MONEDA || 'USD'),
-    garantia: String(cfg.GARANTIA || ''),
     cfg: cfg,
   };
 }
@@ -268,7 +296,7 @@ function buscarCliente_(empresa) {
 function registrarEnHistorial_(c, urlPdf, estado) {
   const h = hoja_(HOJAS.HISTORIAL);
   const fila = [
-    c.numero, new Date(), c.cliente, c.referencia, c.items.length,
+    c.numero, new Date(), c.cliente, c.asunto, c.items.length,
     c.subtotal, c.iva, c.total, estado, urlPdf, c.hilo,
     Session.getActiveUser().getEmail(),
   ];

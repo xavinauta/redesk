@@ -116,15 +116,28 @@ prueba('money_ agrupa los miles y fija dos decimales', () => {
   assert.strictEqual(sandbox.money_(''), '0.00');
 });
 
+prueba('nombreArchivo_ sigue la convención cliente - asunto', () => {
+  assert.strictEqual(
+    sandbox.nombreArchivo_({
+      numero: '#7',
+      cliente: 'IMPORTADORA TOMEBAMBA',
+      asunto: 'EQUIPO PORTABLE DELL',
+    }),
+    'IMPORTADORA TOMEBAMBA - EQUIPO PORTABLE DELL.pdf');
+});
+
+prueba('nombreArchivo_ cae al número cuando no hay asunto', () => {
+  assert.strictEqual(
+    sandbox.nombreArchivo_({ numero: '#7', cliente: 'TECOPESCA', asunto: '' }),
+    'TECOPESCA - #7.pdf');
+});
+
 prueba('nombreArchivo_ limpia los caracteres que Drive rechaza', () => {
   const nombre = sandbox.nombreArchivo_({
-    numero: 'COT-2026-0007',
-    cliente: 'TECOPESCA C.A.',
-    referencia: 'Cotización de TV\'s / pantallas',
+    numero: '#8', cliente: 'TECOPESCA C.A.', asunto: "Cotización de TV's / LED",
   });
-  assert.strictEqual(
-    nombre, "COT-2026-0007 - TECOPESCA C.A. - Cotización de TV's - pantallas.pdf");
-  assert.ok(!/[\\/:*?"<>|]/.test(nombre.replace('.pdf', '')));
+  assert.ok(!/[\\/:*?"<>|]/.test(nombre.replace('.pdf', '')), nombre);
+  assert.ok(nombre.includes("TV's - LED"));
 });
 
 prueba('escaparHtml_ neutraliza el marcado', () => {
@@ -133,33 +146,122 @@ prueba('escaparHtml_ neutraliza el marcado', () => {
     '&lt;b&gt;a &amp; &quot;b&quot;&lt;/b&gt;');
 });
 
+// ------------------------------------------------------------- numeración
+
+prueba('formatearNumero_ resuelve los marcadores del formato', () => {
+  const f = sandbox.formatearNumero_;
+  assert.strictEqual(f(7, 2026, '#{n}'), '#7', 'el formato que usa REDESK hoy');
+  assert.strictEqual(f(7, 2026, 'COT-{aaaa}-{n4}'), 'COT-2026-0007');
+  assert.strictEqual(f(123, 2026, 'P{n4}'), 'P0123');
+  assert.strictEqual(f(7, 2026, ''), '#7', 'sin formato usa el de por defecto');
+});
+
+// -------------------------------------------------------------- catálogo
+
+prueba('descripcionDeItem_ arma marca, parte y especificaciones', () => {
+  assert.strictEqual(
+    sandbox.descripcionDeItem_('DELL', 'DELCOMPORY5C5C',
+      'COMPUTADOR PORTATIL DELL PRO 14 SILVER'),
+    'DELL        DELCOMPORY5C5C\nCOMPUTADOR PORTATIL DELL PRO 14 SILVER');
+  // Sin número de parte no debe quedar el relleno de espacios.
+  assert.strictEqual(
+    sandbox.descripcionDeItem_('APC', '', 'UPS 3KVA RACK'),
+    'APC\nUPS 3KVA RACK');
+  assert.strictEqual(sandbox.descripcionDeItem_('', '', 'Servicio'), 'Servicio');
+});
+
 // ------------------------------------------------------- cuerpo del correo
 
 const COTIZACION_EJEMPLO = {
-  numero: 'COT-2026-0007',
-  referencia: 'Cotización de computadores',
-  entrega: '8 a 10 días laborables',
-  pago: '50% anticipo, 50% contra entrega',
-  validez: '8',
+  numero: '#7',
+  asunto: 'Cotización de computadores',
+  pago: '30 DIAS.',
+  garantia: '3 AÑOS.',
+  validez: '5 DIAS.',
   datosCliente: { contacto: 'Michael Carreño', email: 'compras@tecopesca.com' },
+  items: [
+    { descripcion: 'LENOVO        21M3', observacion: '24 HORAS' },
+    { descripcion: 'DELL        Y5C5C', observacion: '24 HORAS' },
+  ],
   cfg: {
-    EMPRESA_REPRESENTANTE: 'Ing. Xavier Ñauta T., MgT.',
+    EMPRESA_REPRESENTANTE: 'Ing. Xavier Ñauta Tapia',
+    CORREO_FIRMANTE: 'Ing. Xavier Ñauta T., MgT.',
     EMPRESA_CARGO: 'Gerente',
     EMPRESA_NOMBRE: 'REDESK Asesores y Servicios',
     EMPRESA_EMAIL: 'ventas@redesk.net',
     EMPRESA_TELEFONOS: '099-5108229 / 099-6746927',
+    EMPRESA_FACEBOOK: 'www.facebook.com/redesk',
+    EMPRESA_TWITTER: '@xavinauta',
     EMPRESA_WEB: 'www.redesk.net',
+    OBSERVACION_DEFECTO: '24 HORAS',
   },
 };
+
+prueba('tiempoDeEntrega_ resume cuando todos los ítems coinciden', () => {
+  assert.strictEqual(sandbox.tiempoDeEntrega_(COTIZACION_EJEMPLO), '24 HORAS');
+});
+
+prueba('tiempoDeEntrega_ detalla por ítem cuando difieren', () => {
+  const mixto = Object.assign({}, COTIZACION_EJEMPLO, {
+    items: [
+      { descripcion: 'LENOVO        21M3\nThinkPad E14', observacion: '24 HORAS' },
+      { descripcion: 'DELL        Y5C5C\nPro 14', observacion: '15 DIAS' },
+    ],
+  });
+  assert.strictEqual(
+    sandbox.tiempoDeEntrega_(mixto),
+    'LENOVO        21M3: 24 HORAS; DELL        Y5C5C: 15 DIAS');
+});
+
+prueba('tiempoDeEntrega_ cae al valor por defecto sin observaciones', () => {
+  const sinObs = Object.assign({}, COTIZACION_EJEMPLO, {
+    items: [{ descripcion: 'Servicio', observacion: '' }],
+  });
+  assert.strictEqual(sandbox.tiempoDeEntrega_(sinObs), '24 HORAS');
+});
 
 prueba('cuerpoCorreo_ saluda por el nombre y enfatiza el plazo de entrega', () => {
   const c = sandbox.cuerpoCorreo_(COTIZACION_EJEMPLO);
   assert.ok(c.texto.startsWith('Estimado/a Michael:'));
-  assert.ok(c.texto.includes('COT-2026-0007'));
+  assert.ok(c.texto.includes('#7'));
   // Los clientes piden siempre "enfatizar tiempo de entrega".
-  assert.ok(c.texto.includes('Tiempo de entrega: 8 a 10 días laborables'));
+  assert.ok(c.texto.includes('Tiempo de entrega: 24 HORAS'));
+  assert.ok(c.texto.includes('Garantía: 3 AÑOS.'));
   assert.ok(c.html.includes('<b>Tiempo de entrega:</b>'));
-  assert.ok(c.texto.includes('Ing. Xavier Ñauta T., MgT.'));
+});
+
+prueba('la firma del correo reproduce la que REDESK ya usa', () => {
+  const c = sandbox.cuerpoCorreo_(COTIZACION_EJEMPLO);
+  [
+    'Ing. Xavier Ñauta T., MgT.',
+    'Gerente de REDESK Asesores y Servicios',
+    'Mail: ventas@redesk.net',
+    'Celular: 099-5108229 / 099-6746927',
+    'Facebook: www.facebook.com/redesk',
+    'Twitter: @xavinauta',
+    'Web: www.redesk.net',
+  ].forEach((linea) => assert.ok(c.texto.includes(linea), 'falta: ' + linea));
+  // El PDF firma con el nombre largo; el correo, con el de la firma habitual.
+  assert.ok(!c.texto.includes('Ñauta Tapia'));
+});
+
+prueba('la firma omite las redes que se dejen vacías en Config', () => {
+  const cfg = Object.assign({}, COTIZACION_EJEMPLO.cfg,
+    { EMPRESA_FACEBOOK: '', EMPRESA_TWITTER: '' });
+  const c = sandbox.cuerpoCorreo_(Object.assign({}, COTIZACION_EJEMPLO, { cfg }));
+  assert.ok(!c.texto.includes('Facebook:'));
+  assert.ok(!c.texto.includes('Twitter:'));
+  assert.ok(c.texto.includes('Web: www.redesk.net'));
+});
+
+prueba('las versiones en texto y HTML del correo no se desincronizan', () => {
+  const lineas = sandbox.firmaCorreo_(COTIZACION_EJEMPLO.cfg);
+  lineas.forEach((l) => {
+    const plano = l.html.replace(/<[^>]+>/g, '')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+    assert.strictEqual(plano, l.texto);
+  });
 });
 
 prueba('cuerpoCorreo_ usa un saludo genérico sin contacto', () => {
@@ -172,28 +274,43 @@ prueba('cuerpoCorreo_ usa un saludo genérico sin contacto', () => {
 
 prueba('datosPlantilla_ entrega los importes ya formateados', () => {
   const d = sandbox.datosPlantilla_(Object.assign({}, COTIZACION_EJEMPLO, {
-    fechaTexto: '13/08/2026',
-    cliente: 'TECOPESCA C.A.',
-    moneda: 'USD',
-    subtotal: 2400, iva: 360, total: 2760, ivaPct: 0.15,
-    garantia: '1 año', observaciones: '',
+    fechaTexto: '09/02/2026',
+    cliente: 'IMPORTADORA TOMEBAMBA',
+    atte: 'ING. JHONATAN QUITUISACA',
+    email: '', asesor: 'XN', notas: '',
+    datosCliente: {
+      empresa: 'IMPORTADORA TOMEBAMBA', contacto: 'ING. JHONATAN QUITUISACA',
+      email: '',
+    },
+    subtotal: 1376.66, iva: 206.5, total: 1583.16,
     items: [{
-      n: 1, codigo: 'LEN-E14', cantidad: 2, descripcion: 'Laptop ThinkPad E14',
-      marca: 'Lenovo', punitario: 1200, descuento: 0, total: 2400,
+      cantidad: 1, tipo: 'PORTABLE',
+      descripcion: 'DELL        DELCOMPORY5C5C\nCOMPUTADOR PORTATIL DELL PRO 14',
+      punitario: 1376.66, observacion: '24 HORAS', total: 1376.66,
     }],
   }));
-  assert.strictEqual(d.subtotalTexto, '2,400.00');
-  assert.strictEqual(d.ivaPctTexto, '15%');
-  assert.strictEqual(d.totalTexto, '2,760.00');
-  assert.strictEqual(d.items[0].descuentoTexto, '—', 'sin descuento va una raya');
-  assert.strictEqual(d.items[0].punitarioTexto, '1,200.00');
+  // Los mismos importes de la proforma real que sirvió de referencia.
+  assert.strictEqual(d.subtotalTexto, '1,376.66');
+  assert.strictEqual(d.ivaTexto, '206.50');
+  assert.strictEqual(d.totalTexto, '1,583.16');
+  assert.strictEqual(d.items[0].tipo, 'PORTABLE');
+  assert.strictEqual(d.items[0].observacion, '24 HORAS');
+  assert.strictEqual(
+    d.items[0].descripcionHtml,
+    'DELL        DELCOMPORY5C5C<br>COMPUTADOR PORTATIL DELL PRO 14');
+  assert.strictEqual(d.logo, '', 'sin ID configurado no se toca Drive');
+});
+
+prueba('el IVA de la proforma de referencia es el 15% vigente', () => {
+  assert.strictEqual(Math.round(1376.66 * 0.15 * 100) / 100, 206.5);
+  assert.strictEqual(1376.66 + 206.5, 1583.16);
 });
 
 prueba('multilinea_ conserva los saltos de las especificaciones', () => {
   const especificacion = 'Laptop ThinkPad E14\n• Intel i7 14ª Gen\n• 32 GB RAM';
-  const html = sandbox.multilinea_(especificacion);
   assert.strictEqual(
-    html, 'Laptop ThinkPad E14<br>• Intel i7 14ª Gen<br>• 32 GB RAM');
+    sandbox.multilinea_(especificacion),
+    'Laptop ThinkPad E14<br>• Intel i7 14ª Gen<br>• 32 GB RAM');
   // Y sigue escapando: el <br> es nuestro, no del contenido.
   assert.strictEqual(sandbox.multilinea_('a <b>x</b>'), 'a &lt;b&gt;x&lt;/b&gt;');
 });

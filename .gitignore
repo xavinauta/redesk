@@ -4,3 +4,8 @@
 
 node_modules/
 .DS_Store
+
+# Salidas de tools/previsualizar.js
+previsualizacion.html
+previsualizacion.png
+previsualizacion.pdf

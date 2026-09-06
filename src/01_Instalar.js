@@ -172,43 +172,50 @@ function crearHojaCatalogo_(ss) {
     'Margen, o el modo en Config ▸ MARGEN_SOBRE.');
 }
 
-/** Crea y formatea la hoja de trabajo Cotización. */
+/**
+ * Crea y formatea la hoja de trabajo Cotización, con los mismos campos y
+ * columnas que la proforma que REDESK ya envía a sus clientes.
+ */
 function crearHojaCotizacion_(ss) {
   const h = obtenerOCrear_(ss, HOJAS.COTIZACION);
   const cfg = leerConfig();
 
-  h.getRange('A1').setValue('COTIZACIÓN')
-    .setFontSize(18).setFontWeight('bold').setFontColor('#1F4E79');
+  h.getRange('A1').setValue('PROFORMA')
+    .setFontSize(18).setFontWeight('bold');
   h.getRange('A1:H1').merge();
 
   const etiquetas = [
-    [COT.FILA_NUMERO, 'N° Cotización'],
+    [COT.FILA_NUMERO, 'N° Proforma'],
     [COT.FILA_FECHA, 'Fecha'],
-    [COT.FILA_CLIENTE, 'Cliente'],
-    [COT.FILA_CONTACTO, 'Contacto'],
-    [COT.FILA_EMAIL, 'Correo'],
+    [COT.FILA_CLIENTE, 'Nombre (cliente)'],
+    [COT.FILA_ATTE, 'Atte'],
+    [COT.FILA_EMAIL, 'E-Mail'],
     [COT.FILA_CC, 'Copia a (CC)'],
-    [COT.FILA_REFERENCIA, 'Referencia / Asunto'],
-    [COT.FILA_ENTREGA, 'Tiempo de entrega'],
-    [COT.FILA_PAGO, 'Forma de pago'],
-    [COT.FILA_VALIDEZ, 'Validez (días)'],
-    [COT.FILA_OBSERVACIONES, 'Observaciones'],
+    [COT.FILA_ASUNTO, 'Asunto'],
+    [COT.FILA_ASESOR, 'Asesor'],
+    [COT.FILA_NOTAS, 'Notas'],
+    [COT.FILA_PAGO, 'Pago'],
+    [COT.FILA_GARANTIA, 'Garantía'],
+    [COT.FILA_VALIDEZ, 'Validez'],
     [COT.FILA_HILO, 'ID hilo Gmail'],
   ];
   etiquetas.forEach(function (e) {
     h.getRange(e[0], COT.COL_ETIQUETA).setValue(e[1]).setFontWeight('bold');
-    h.getRange(e[0], COT.COL_VALOR, 1, 3).merge();
+    h.getRange(e[0], COT.COL_VALOR, 1, 4).merge();
   });
 
-  h.getRange(COT.FILA_NUMERO, COT.COL_VALOR).setNumberFormat('@');
+  h.getRange(COT.FILA_NUMERO, COT.COL_VALOR).setNumberFormat('@')
+    .setFontWeight('bold').setFontColor(String(cfg.COLOR_DESTACADO || '#FF0000'));
   h.getRange(COT.FILA_FECHA, COT.COL_VALOR).setNumberFormat('dd/MM/yyyy');
-  h.getRange(COT.FILA_VALIDEZ, COT.COL_VALOR).setNumberFormat('0');
   h.getRange(COT.FILA_HILO, COT.COL_VALOR).setNumberFormat('@')
     .setFontColor('#999999').setFontSize(9);
-  h.getRange(COT.FILA_HILO, COT.COL_ETIQUETA).setFontColor('#999999').setFontSize(9);
-  h.getRange(COT.FILA_HILO, COT.COL_ETIQUETA)
+  h.getRange(COT.FILA_HILO, COT.COL_ETIQUETA).setFontColor('#999999')
+    .setFontSize(9)
     .setNote('Lo llena "Cotizar solicitud seleccionada". Si tiene un ID, el ' +
       'borrador se crea como respuesta dentro de ese hilo de Gmail.');
+  h.getRange(COT.FILA_ASUNTO, COT.COL_ETIQUETA)
+    .setNote('Encabeza el PDF y da nombre al archivo, igual que en ' +
+      '"IMPORTADORA TOMEBAMBA - EQUIPO PORTABLE DELL".');
 
   // Desplegable de clientes.
   const hClientes = ss.getSheetByName(HOJAS.CLIENTES);
@@ -225,19 +232,27 @@ function crearHojaCotizacion_(ss) {
     return '=IF($B$' + COT.FILA_CLIENTE + '="","",IFERROR(VLOOKUP($B$' +
       COT.FILA_CLIENTE + ",'" + HOJAS.CLIENTES + "'!$A:$J," + col + ',FALSE),""))';
   };
-  h.getRange(COT.FILA_CONTACTO, COT.COL_VALOR).setFormula(buscar(CLI.CONTACTO));
+  h.getRange(COT.FILA_ATTE, COT.COL_VALOR).setFormula(buscar(CLI.CONTACTO));
   h.getRange(COT.FILA_EMAIL, COT.COL_VALOR).setFormula(buscar(CLI.EMAIL));
   h.getRange(COT.FILA_CC, COT.COL_VALOR).setFormula(buscar(CLI.CC));
-  h.getRange(COT.FILA_CONTACTO, COT.COL_VALOR, 3, 1).setBackground('#F2F7FB');
+  h.getRange(COT.FILA_ATTE, COT.COL_VALOR, 3, 1).setBackground('#F2F7FB');
 
-  // Tabla de ítems.
-  encabezados_(h, [
-    '#', 'Código', 'Cant.', 'Descripción', 'Marca',
-    'P. Unitario', 'Dcto.', 'Total USD',
-  ], COT.FILA_ENCABEZADO_ITEMS);
-  h.setFrozenRows(0); // encabezados_ congela; aquí estorbaría 16 filas fijas.
+  // Tabla de ítems, con las mismas columnas que la proforma en papel.
+  const acento = String(cfg.COLOR_ACENTO || '#8EAADB');
+  const cab = h.getRange(COT.FILA_ENCABEZADO_ITEMS, 1, 1, 8);
+  cab.setValues([[
+    '#', 'Código', 'CANTIDAD', 'TIPO', 'DESCRIPCION',
+    'PRECIO UNITARIO', 'OBSERVACION', 'PRECIO TOTAL',
+  ]])
+    .setFontWeight('bold')
+    .setBackground(acento)
+    .setVerticalAlignment('middle')
+    .setWrap(true)
+    .setBorder(true, true, true, true, true, true, '#000000',
+      SpreadsheetApp.BorderStyle.SOLID);
+  h.setRowHeight(COT.FILA_ENCABEZADO_ITEMS, 34);
 
-  [40, 110, 60, 480, 110, 100, 70, 110].forEach(function (w, i) {
+  [40, 110, 70, 110, 430, 100, 120, 100].forEach(function (w, i) {
     h.setColumnWidth(i + 1, w);
   });
 
@@ -245,51 +260,58 @@ function crearHojaCotizacion_(ss) {
   const p = COT.FILA_PRIMER_ITEM;
 
   // R1C1 para que cada fila apunte a su propia descripción y precio.
+  // RC5 = Descripción, RC3 = Cantidad, RC6 = Precio unitario.
   h.getRange(p, COT.COL_ITEM, nItems, 1)
-    .setFormulaR1C1('=IF(RC4="","",COUNTA(R' + p + 'C4:RC4))')
+    .setFormulaR1C1('=IF(RC5="","",COUNTA(R' + p + 'C5:RC5))')
     .setHorizontalAlignment('center');
   h.getRange(p, COT.COL_TOTAL, nItems, 1)
-    .setFormulaR1C1('=IF(RC4="","",ROUND(RC3*RC6*(1-N(RC7)),2))');
+    .setFormulaR1C1('=IF(RC5="","",ROUND(RC3*RC6,2))');
 
   h.getRange(p, COT.COL_CANTIDAD, nItems, 1).setNumberFormat('#,##0.##')
     .setHorizontalAlignment('center');
   h.getRange(p, COT.COL_PUNITARIO, nItems, 1).setNumberFormat('#,##0.00');
-  h.getRange(p, COT.COL_DESCUENTO, nItems, 1).setNumberFormat('0.00%');
   h.getRange(p, COT.COL_TOTAL, nItems, 1).setNumberFormat('#,##0.00');
   h.getRange(p, COT.COL_DESCRIPCION, nItems, 1).setWrap(true)
     .setVerticalAlignment('top');
+  h.getRange(p, COT.COL_OBSERVACION, nItems, 1).setWrap(true)
+    .setVerticalAlignment('top');
   h.getRange(p, COT.COL_ITEM, nItems, 8)
-    .setBorder(true, true, true, true, true, true, '#D0D7DE',
+    .setBorder(true, true, true, true, true, true, '#B0B7BE',
       SpreadsheetApp.BorderStyle.SOLID);
   h.getRange(p, COT.COL_CODIGO, nItems, 1).setNumberFormat('@')
     .setBackground('#FFF8E1');
   h.getRange(COT.FILA_ENCABEZADO_ITEMS, COT.COL_CODIGO)
-    .setNote('Escribe un código del Catálogo y se completan solos la ' +
-      'descripción, la marca y el precio. También puedes dejarlo vacío y ' +
-      'escribir la descripción a mano.');
+    .setNote('Escribe un código del Catálogo y se completan solos el tipo, ' +
+      'la descripción, el precio y la observación. También puedes dejarlo ' +
+      'vacío y escribirlo todo a mano.');
+  h.getRange(COT.FILA_ENCABEZADO_ITEMS, COT.COL_DESCRIPCION)
+    .setNote('Admite varias líneas (Alt+Enter). La primera suele ser ' +
+      '"MARCA    NÚMERO DE PARTE" y las siguientes, las especificaciones.');
 
   // Totales.
   const totales = [
-    [COT.FILA_SUBTOTAL, 'Subtotal',
+    [COT.FILA_SUBTOTAL, 'SUBTOTAL:',
       '=ROUND(SUM($H$' + p + ':$H$' + COT.FILA_ULTIMO_ITEM + '),2)'],
-    [COT.FILA_IVA, 'IVA', '=ROUND($H$' + COT.FILA_SUBTOTAL + '*IVA_PCT,2)'],
-    [COT.FILA_TOTAL, 'TOTAL',
+    [COT.FILA_IVA, 'IVA:', '=ROUND($H$' + COT.FILA_SUBTOTAL + '*IVA_PCT,2)'],
+    [COT.FILA_TOTAL, 'TOTAL:',
       '=$H$' + COT.FILA_SUBTOTAL + '+$H$' + COT.FILA_IVA],
   ];
   totales.forEach(function (t) {
-    h.getRange(t[0], COT.COL_DESCUENTO).setValue(t[1])
+    h.getRange(t[0], COT.COL_OBSERVACION).setValue(t[1])
       .setFontWeight('bold').setHorizontalAlignment('right');
     h.getRange(t[0], COT.COL_TOTAL).setFormula(t[2])
       .setNumberFormat('#,##0.00').setFontWeight('bold');
   });
-  h.getRange(COT.FILA_TOTAL, COT.COL_DESCUENTO, 1, 2)
-    .setBackground('#1F4E79').setFontColor('#FFFFFF').setFontSize(12);
+  h.getRange(COT.FILA_TOTAL, COT.COL_OBSERVACION, 1, 2)
+    .setFontColor(String(cfg.COLOR_DESTACADO || '#FF0000')).setFontSize(12);
 
-  // Valores por defecto en un formulario todavía vacío.
-  if (!h.getRange(COT.FILA_ENTREGA, COT.COL_VALOR).getValue()) {
-    h.getRange(COT.FILA_ENTREGA, COT.COL_VALOR).setValue(cfg.TIEMPO_ENTREGA || '');
-    h.getRange(COT.FILA_PAGO, COT.COL_VALOR).setValue(cfg.FORMA_PAGO || '');
-    h.getRange(COT.FILA_VALIDEZ, COT.COL_VALOR).setValue(cfg.VALIDEZ_DIAS || 8);
+  // Condiciones por defecto en un formulario todavía vacío.
+  if (!h.getRange(COT.FILA_PAGO, COT.COL_VALOR).getValue()) {
+    h.getRange(COT.FILA_ASESOR, COT.COL_VALOR).setValue(cfg.ASESOR || '');
+    h.getRange(COT.FILA_NOTAS, COT.COL_VALOR).setValue(cfg.NOTAS || '');
+    h.getRange(COT.FILA_PAGO, COT.COL_VALOR).setValue(cfg.PAGO || '');
+    h.getRange(COT.FILA_GARANTIA, COT.COL_VALOR).setValue(cfg.GARANTIA || '');
+    h.getRange(COT.FILA_VALIDEZ, COT.COL_VALOR).setValue(cfg.VALIDEZ || '');
   }
   h.setHiddenGridlines(true);
 }

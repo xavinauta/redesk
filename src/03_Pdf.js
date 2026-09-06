@@ -18,7 +18,7 @@ function generarPdf() {
     '<a href="' + archivo.getUrl() + '" target="_blank">' +
     escaparHtml_(archivo.getName()) + '</a></p>')
     .setWidth(420).setHeight(140);
-  ui.showModalDialog(html, 'Cotización ' + c.numero);
+  ui.showModalDialog(html, 'Proforma ' + c.numero);
 }
 
 /**
@@ -54,7 +54,8 @@ function construirBlobPdf_(c) {
 
 /**
  * Aplana la cotización a los campos que espera la plantilla, con los
- * importes ya formateados (la plantilla no debe hacer cálculos).
+ * importes ya formateados y las imágenes ya incrustadas (la plantilla no
+ * debe hacer cálculos ni tocar Drive).
  *
  * @param {!Object} c
  * @return {!Object}
@@ -64,81 +65,88 @@ function datosPlantilla_(c) {
   const cl = c.datosCliente;
 
   return {
-    color: String(cfg.COLOR_PRIMARIO || '#1F4E79'),
-    logo: String(cfg.EMPRESA_LOGO_URL || ''),
+    acento: String(cfg.COLOR_ACENTO || '#8EAADB'),
+    destacado: String(cfg.COLOR_DESTACADO || '#FF0000'),
+    enlace: String(cfg.COLOR_ENLACE || '#0563C1'),
+
+    logo: imagenIncrustada_(cfg.LOGO_ARCHIVO_ID),
+    firma: imagenIncrustada_(cfg.FIRMA_ARCHIVO_ID),
+    marcas: imagenIncrustada_(cfg.MARCAS_ARCHIVO_ID),
+
     empresa: String(cfg.EMPRESA_NOMBRE || ''),
-    ruc: String(cfg.EMPRESA_RUC || ''),
     direccion: String(cfg.EMPRESA_DIRECCION || ''),
-    ciudad: String(cfg.EMPRESA_CIUDAD || ''),
     telefonos: String(cfg.EMPRESA_TELEFONOS || ''),
     email: String(cfg.EMPRESA_EMAIL || ''),
     web: String(cfg.EMPRESA_WEB || ''),
     representante: String(cfg.EMPRESA_REPRESENTANTE || ''),
-    cargo: String(cfg.EMPRESA_CARGO || ''),
 
     numero: c.numero,
     fechaTexto: c.fechaTexto,
-    referencia: c.referencia,
+    asunto: c.asunto,
+    asesor: c.asesor,
 
     clienteNombre: cl.empresa || c.cliente,
-    clienteRuc: cl.ruc,
-    clienteContacto: cl.contacto || c.contacto,
-    clienteCargo: cl.cargo,
+    clienteAtte: cl.contacto || c.atte,
     clienteEmail: cl.email || c.email,
-    clienteDireccion: cl.direccion,
-    clienteTelefono: cl.telefono,
 
     items: c.items.map(function (it) {
       return {
-        n: it.n,
-        codigo: it.codigo,
         cantidad: it.cantidad,
-        // Las especificaciones suelen venir en varias líneas dentro de una
-        // celda; sin esto el PDF las imprimiría como un párrafo corrido.
+        tipo: it.tipo,
+        // Las especificaciones vienen en varias líneas dentro de una celda;
+        // sin esto el PDF las imprimiría como un párrafo corrido.
         descripcionHtml: multilinea_(it.descripcion),
-        marca: it.marca,
         punitarioTexto: money_(it.punitario),
-        descuentoTexto: it.descuento
-          ? (it.descuento * 100).toFixed(0) + '%'
-          : '—',
         totalTexto: money_(it.total),
+        observacion: it.observacion,
       };
     }),
 
-    moneda: c.moneda,
     subtotalTexto: money_(c.subtotal),
     ivaTexto: money_(c.iva),
     totalTexto: money_(c.total),
-    ivaPctTexto: (c.ivaPct * 100).toFixed(0) + '%',
 
-    entrega: c.entrega,
+    notasHtml: multilinea_(c.notas),
     pago: c.pago,
-    validez: c.validez,
     garantia: c.garantia,
-    observacionesHtml: multilinea_(c.observaciones),
-    tieneObservaciones: !!c.observaciones,
+    validez: c.validez,
   };
 }
 
 /**
- * Escapa un texto y convierte sus saltos de línea en <br>, para insertarlo
- * en la plantilla con <?!= ?>.
- * @param {string} texto
- * @return {string} HTML seguro
+ * Devuelve un archivo de Drive como URI de datos para incrustarlo en el PDF.
+ *
+ * Se incrusta en vez de enlazar porque el conversor de HtmlService no
+ * descarga imágenes de Drive: un enlace saldría como hueco en blanco.
+ *
+ * @param {*} idArchivo ID del archivo, o vacío
+ * @return {string} el URI de datos, o cadena vacía si no hay imagen
  */
-function multilinea_(texto) {
-  return escaparHtml_(String(texto || '')).replace(/\r?\n/g, '<br>');
+function imagenIncrustada_(idArchivo) {
+  const id = String(idArchivo || '').trim();
+  if (!id) return '';
+  try {
+    const blob = DriveApp.getFileById(id).getBlob();
+    return 'data:' + blob.getContentType() + ';base64,' +
+      Utilities.base64Encode(blob.getBytes());
+  } catch (err) {
+    // Una imagen que falta no debe impedir emitir la proforma.
+    console.error('No pude leer la imagen ' + id + ': ' + err);
+    return '';
+  }
 }
 
 /**
- * Nombre del archivo PDF: "COT-2026-0007 - TECOPESCA - Equipos Lenovo.pdf".
+ * Nombre del archivo PDF siguiendo la convención que ya se usa en el correo:
+ * "IMPORTADORA TOMEBAMBA - EQUIPO PORTABLE DELL.pdf". Si no hay asunto, cae
+ * al número de proforma para no dejar archivos sin identificar.
+ *
  * @param {!Object} c
  * @return {string}
  */
 function nombreArchivo_(c) {
-  const partes = [c.numero, c.cliente];
-  if (c.referencia) partes.push(c.referencia);
-  const nombre = partes.join(' - ')
+  const partes = c.asunto ? [c.cliente, c.asunto] : [c.cliente, c.numero];
+  const nombre = partes.filter(Boolean).join(' - ')
     .replace(/[\\/:*?"<>|]/g, '-')
     .replace(/\s+/g, ' ')
     .trim()
@@ -158,6 +166,16 @@ function carpetaCotizaciones_() {
   const carpeta = subcarpeta_(carpetaDelLibro_(), 'REDESK - Cotizaciones');
   escribirConfig_('CARPETA_COTIZACIONES_ID', carpeta.getId());
   return carpeta;
+}
+
+/**
+ * Escapa un texto y convierte sus saltos de línea en <br>, para insertarlo
+ * en la plantilla con <?!= ?>.
+ * @param {string} texto
+ * @return {string} HTML seguro
+ */
+function multilinea_(texto) {
+  return escaparHtml_(String(texto || '')).replace(/\r?\n/g, '<br>');
 }
 
 /**

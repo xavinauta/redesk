@@ -182,11 +182,9 @@ function cotizarSolicitudSeleccionada() {
 
   hc.getRange(COT.FILA_NUMERO, COT.COL_VALOR).setValue(numero);
   hc.getRange(COT.FILA_FECHA, COT.COL_VALOR).setValue(new Date());
-  hc.getRange(COT.FILA_REFERENCIA, COT.COL_VALOR)
+  hc.getRange(COT.FILA_ASUNTO, COT.COL_VALOR)
     .setValue(asunto.replace(/^(re|rv|fwd):\s*/i, '').trim());
-  hc.getRange(COT.FILA_ENTREGA, COT.COL_VALOR).setValue(cfg.TIEMPO_ENTREGA || '');
-  hc.getRange(COT.FILA_PAGO, COT.COL_VALOR).setValue(cfg.FORMA_PAGO || '');
-  hc.getRange(COT.FILA_VALIDEZ, COT.COL_VALOR).setValue(cfg.VALIDEZ_DIAS || 8);
+  aplicarCondicionesPorDefecto_(hc, cfg);
   hc.getRange(COT.FILA_HILO, COT.COL_VALOR).setValue(hiloId);
 
   const cliente = clientePorCorreo_(extraerEmail_(remitente));
@@ -200,8 +198,8 @@ function cotizarSolicitudSeleccionada() {
     cliente ? COT.COL_CODIGO : COT.COL_VALOR));
 
   aviso_(cliente
-    ? 'Cotización ' + numero + ' para ' + cliente + '. Carga los ítems.'
-    : 'Cotización ' + numero + '. No reconocí al cliente: elígelo a mano.');
+    ? 'Proforma ' + numero + ' para ' + cliente + '. Carga los ítems.'
+    : 'Proforma ' + numero + '. No reconocí al cliente: elígelo a mano.');
 }
 
 /**
@@ -267,8 +265,7 @@ function generarPdfYBorrador() {
     if (c.datosCliente.cc) opciones.cc = c.datosCliente.cc;
     borrador = GmailApp.createDraft(
       destino,
-      'Cotización ' + c.numero +
-        (c.referencia ? ' — ' + c.referencia : ''),
+      'Cotización ' + c.numero + (c.asunto ? ' — ' + c.asunto : ''),
       cuerpo.texto,
       opciones);
   }
@@ -312,46 +309,99 @@ function cuerpoCorreo_(c) {
     ? 'Estimado/a ' + c.datosCliente.contacto.split(' ')[0] + ':'
     : 'Estimados:';
 
+  // Los clientes piden siempre "enfatizar tiempo de entrega", así que las
+  // observaciones por ítem se resumen en el cuerpo del correo.
+  const entrega = tiempoDeEntrega_(c);
+
   const lineas = [
     saludo,
     '',
     'Adjunto la cotización ' + c.numero +
-      (c.referencia ? ' por ' + c.referencia : '') + '.',
+      (c.asunto ? ' por ' + c.asunto : '') + '.',
     '',
-    'Tiempo de entrega: ' + c.entrega,
+    'Tiempo de entrega: ' + entrega,
     'Forma de pago: ' + c.pago,
-    'Validez de la oferta: ' + c.validez + ' días',
+    'Garantía: ' + c.garantia,
+    'Validez de la oferta: ' + c.validez,
     '',
     'Quedo atento a cualquier consulta.',
     '',
     'Atentamente:',
     '',
-    String(cfg.EMPRESA_REPRESENTANTE || ''),
-    String(cfg.EMPRESA_CARGO || '') + ' de ' + String(cfg.EMPRESA_NOMBRE || ''),
-    'Mail: ' + String(cfg.EMPRESA_EMAIL || ''),
-    'Celular: ' + String(cfg.EMPRESA_TELEFONOS || ''),
-    'Web: ' + String(cfg.EMPRESA_WEB || ''),
-  ];
+  ].concat(firmaCorreo_(cfg).map(function (l) { return l.texto; }));
   const texto = lineas.join('\n');
 
   const html =
     '<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.5">' +
     '<p>' + escaparHtml_(saludo) + '</p>' +
     '<p>Adjunto la cotización <b>' + escaparHtml_(c.numero) + '</b>' +
-    (c.referencia ? ' por ' + escaparHtml_(c.referencia) : '') + '.</p>' +
-    '<p><b>Tiempo de entrega:</b> ' + escaparHtml_(c.entrega) + '<br>' +
+    (c.asunto ? ' por ' + escaparHtml_(c.asunto) : '') + '.</p>' +
+    '<p><b>Tiempo de entrega:</b> ' + escaparHtml_(entrega) + '<br>' +
     '<b>Forma de pago:</b> ' + escaparHtml_(c.pago) + '<br>' +
+    '<b>Garantía:</b> ' + escaparHtml_(c.garantia) + '<br>' +
     '<b>Validez de la oferta:</b> ' + escaparHtml_(String(c.validez)) +
-    ' días</p>' +
+    '</p>' +
     '<p>Quedo atento a cualquier consulta.</p>' +
     '<p>Atentamente:<br><br>' +
-    '<b>' + escaparHtml_(String(cfg.EMPRESA_REPRESENTANTE || '')) + '</b><br>' +
-    escaparHtml_(String(cfg.EMPRESA_CARGO || '')) + ' de ' +
-    escaparHtml_(String(cfg.EMPRESA_NOMBRE || '')) + '<br>' +
-    'Mail: ' + escaparHtml_(String(cfg.EMPRESA_EMAIL || '')) + '<br>' +
-    'Celular: ' + escaparHtml_(String(cfg.EMPRESA_TELEFONOS || '')) + '<br>' +
-    'Web: ' + escaparHtml_(String(cfg.EMPRESA_WEB || '')) +
+    firmaCorreo_(cfg).map(function (l) { return l.html; }).join('<br>') +
     '</p></div>';
 
   return { texto: texto, html: html };
+}
+
+/**
+ * Arma la firma del correo con el mismo orden y las mismas etiquetas que la
+ * que REDESK ya usa. Devuelve cada línea en texto plano y en HTML para que
+ * las dos versiones del correo no se desincronicen.
+ *
+ * @param {!Object<string, *>} cfg
+ * @return {!Array<{texto: string, html: string}>}
+ */
+function firmaCorreo_(cfg) {
+  const firmante = String(cfg.CORREO_FIRMANTE || cfg.EMPRESA_REPRESENTANTE || '');
+  const cargo = String(cfg.EMPRESA_CARGO || '');
+  const empresa = String(cfg.EMPRESA_NOMBRE || '');
+
+  const lineas = [
+    { texto: firmante, html: '<b>' + escaparHtml_(firmante) + '</b>' },
+    { texto: [cargo, empresa].filter(Boolean).join(' de ') },
+    { texto: 'Mail: ' + String(cfg.EMPRESA_EMAIL || '') },
+    { texto: 'Celular: ' + String(cfg.EMPRESA_TELEFONOS || '') },
+  ];
+  if (cfg.EMPRESA_FACEBOOK) {
+    lineas.push({ texto: 'Facebook: ' + String(cfg.EMPRESA_FACEBOOK) });
+  }
+  if (cfg.EMPRESA_TWITTER) {
+    lineas.push({ texto: 'Twitter: ' + String(cfg.EMPRESA_TWITTER) });
+  }
+  lineas.push({ texto: 'Web: ' + String(cfg.EMPRESA_WEB || '') });
+
+  return lineas.map(function (l) {
+    return { texto: l.texto, html: l.html || escaparHtml_(l.texto) };
+  });
+}
+
+/**
+ * Resume el tiempo de entrega de la proforma a partir de la columna
+ * Observación: si todos los ítems coinciden se enuncia una sola vez, y si no
+ * se listan por ítem para no perder el matiz.
+ *
+ * @param {!Object} c
+ * @return {string}
+ */
+function tiempoDeEntrega_(c) {
+  const valores = c.items
+    .map(function (i) { return i.observacion; })
+    .filter(Boolean);
+  if (!valores.length) return String(c.cfg.OBSERVACION_DEFECTO || '');
+
+  const unicos = valores.filter(function (v, i) {
+    return valores.indexOf(v) === i;
+  });
+  if (unicos.length === 1) return unicos[0];
+
+  return c.items
+    .filter(function (i) { return i.observacion; })
+    .map(function (i) { return i.descripcion.split('\n')[0] + ': ' + i.observacion; })
+    .join('; ');
 }
