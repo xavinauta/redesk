@@ -22,7 +22,10 @@ const ARCHIVOS = [
 /** Objetos de Google simulados: sólo lo que hace falta para cargar el código. */
 const sandbox = {
   console,
-  MimeType: { PDF: 'application/pdf', GOOGLE_DOCS: 'application/vnd.google-apps.document' },
+  MimeType: {
+    PDF: 'application/pdf', HTML: 'text/html',
+    GOOGLE_DOCS: 'application/vnd.google-apps.document',
+  },
   SpreadsheetApp: {
     getUi: () => ({ ButtonSet: {}, Button: {}, alert: () => {}, createMenu: () => {} }),
     getActiveSpreadsheet: () => ({ getSpreadsheetTimeZone: () => 'America/Guayaquil' }),
@@ -53,6 +56,10 @@ function prueba(nombre, fn) { casos.push([nombre, fn]); }
  * el prototipo de ese contexto, así que deepStrictEqual los rechaza aunque
  * el contenido coincida; normalizar por JSON compara lo que importa.
  */
+function enContexto(codigo) {
+  vm.runInContext(codigo, sandbox);
+}
+
 function igual(actual, esperado, mensaje) {
   assert.deepStrictEqual(
     JSON.parse(JSON.stringify(actual)), esperado, mensaje);
@@ -180,29 +187,85 @@ prueba('ninguna fórmula lleva decimales escritos dentro', () => {
 
 // -------------------------------------------------------------- OCR Drive
 
-prueba('peticionOcr_ usa los nombres de campo de Drive v2', () => {
-  // El editor de Apps Script ofrece v2 en muchas cuentas: título, padres
-  // como objetos y conversión explícita.
-  const p = sandbox.peticionOcr_('lista.pdf', 'CARPETA1', 'v2');
-  assert.strictEqual(p.recurso.title, 'OCR lista.pdf');
-  assert.strictEqual(p.recurso.name, undefined, 'v2 no usa "name"');
-  igual(p.recurso.parents, [{ id: 'CARPETA1' }]);
-  assert.strictEqual(p.recurso.mimeType, 'application/vnd.google-apps.document');
-  igual(p.opciones, { convert: true, ocr: true, ocrLanguage: 'es' });
+/**
+ * Sustituye el servicio de Drive por uno que anota las llamadas.
+ * @param {{insert: (function()|undefined), create: (function()|undefined)}} impl
+ * @return {!Array<!Object>} las llamadas registradas
+ */
+function espiarDrive(impl) {
+  const llamadas = [];
+  sandbox.Drive = {
+    Files: {
+      insert: function (recurso, contenido, opciones) {
+        llamadas.push({ metodo: 'insert', recurso: recurso, opciones: opciones });
+        return impl.insert ? impl.insert() : { id: 'DOC_V2' };
+      },
+      create: function (recurso, contenido, opciones) {
+        llamadas.push({ metodo: 'create', recurso: recurso, opciones: opciones });
+        return impl.create ? impl.create() : { id: 'DOC_V3' };
+      },
+    },
+  };
+  enContexto('_versionDrive = null;');
+  return llamadas;
+}
+
+prueba('crearDocDesdeBlob_ usa los campos de Drive v2', () => {
+  // v2 nombra title, anida los padres y pide convert y ocr explícitos.
+  const llamadas = espiarDrive({});
+  const id = sandbox.crearDocDesdeBlob_(
+    {}, 'OCR lista.jpg', 'CARPETA1', sandbox.opcionesOcr_());
+
+  assert.strictEqual(id, 'DOC_V2');
+  assert.strictEqual(llamadas.length, 1, 'v2 responde: no se prueba v3');
+  assert.strictEqual(llamadas[0].metodo, 'insert');
+  igual(llamadas[0].recurso, {
+    title: 'OCR lista.jpg',
+    mimeType: 'application/vnd.google-apps.document',
+    parents: [{ id: 'CARPETA1' }],
+  });
+  igual(llamadas[0].opciones, {
+    convert: true, supportsAllDrives: true, ocr: true, ocrLanguage: 'es',
+  });
 });
 
-prueba('peticionOcr_ usa los nombres de campo de Drive v3', () => {
-  const p = sandbox.peticionOcr_('lista.pdf', 'CARPETA1', 'v3');
-  assert.strictEqual(p.recurso.name, 'OCR lista.pdf');
-  assert.strictEqual(p.recurso.title, undefined, 'v3 no usa "title"');
-  igual(p.recurso.parents, ['CARPETA1'], 'v3 pasa IDs sueltos');
-  igual(p.opciones, { ocrLanguage: 'es' });
+prueba('crearDocDesdeBlob_ recurre a Drive v3 si la v2 falla', () => {
+  const llamadas = espiarDrive({
+    insert: () => { throw new Error('File not found'); },
+  });
+  const id = sandbox.crearDocDesdeBlob_(
+    {}, 'OCR lista.jpg', 'CARPETA1', sandbox.opcionesOcr_());
+
+  assert.strictEqual(id, 'DOC_V3');
+  assert.strictEqual(llamadas[1].metodo, 'create');
+  igual(llamadas[1].recurso, {
+    name: 'OCR lista.jpg',
+    mimeType: 'application/vnd.google-apps.document',
+    parents: ['CARPETA1'],
+  }, 'v3 pasa los padres como IDs sueltos');
+  // v3 no admite convert ni ocr: la conversión va implícita en el mimeType.
+  igual(llamadas[1].opciones, { supportsAllDrives: true, ocrLanguage: 'es' });
 });
 
-prueba('peticionOcr_ trata cualquier versión desconocida como v2', () => {
-  // v2 es la que más cuentas ofrecen, así que es el respaldo razonable.
-  igual(sandbox.peticionOcr_('x.jpg', 'C', ''),
-    JSON.parse(JSON.stringify(sandbox.peticionOcr_('x.jpg', 'C', 'v2'))));
+prueba('crearDocDesdeBlob_ informa de los dos intentos si ambos fallan', () => {
+  espiarDrive({
+    insert: () => { throw new Error('File not found: ABC'); },
+    create: () => { throw new Error('Invalid mime type'); },
+  });
+  assert.throws(
+    () => sandbox.crearDocDesdeBlob_({}, 'x', 'C', sandbox.opcionesOcr_()),
+    (err) => {
+      // Con un solo error no se sabe si falló la forma o el archivo.
+      assert.ok(err.message.includes('v2: File not found: ABC'), err.message);
+      assert.ok(err.message.includes('v3: Invalid mime type'), err.message);
+      return true;
+    });
+});
+
+prueba('crearDocDesdeBlob_ sin opciones de OCR no las inventa', () => {
+  const llamadas = espiarDrive({});
+  sandbox.crearDocDesdeBlob_({}, 'tmp proforma', 'CARPETA1');
+  igual(llamadas[0].opciones, { convert: true, supportsAllDrives: true });
 });
 
 prueba('el manifiesto declara una versión de Drive que el código sabe armar', () => {
@@ -406,7 +469,53 @@ prueba('datosPlantilla_ entrega los importes ya formateados', () => {
   assert.strictEqual(
     d.items[0].descripcionHtml,
     'DELL        DELCOMPORY5C5C<br>COMPUTADOR PORTATIL DELL PRO 14');
-  assert.strictEqual(d.logo, '', 'sin ID configurado no se toca Drive');
+  assert.strictEqual(d.logo, '', 'sin imagen disponible no se deja marca');
+});
+
+prueba('datosPlantilla_ deja la marca de cada imagen disponible', () => {
+  const disponibles = {
+    logo: { marca: '[[LOGO]]' },
+    marcas: { marca: '[[MARCAS]]' },
+  };
+  const d = sandbox.datosPlantilla_(
+    Object.assign({}, COTIZACION_EJEMPLO, {
+      fechaTexto: '09/02/2026', cliente: 'X', atte: '', email: '',
+      asesor: 'XN', notas: '', datosCliente: {}, items: [],
+      subtotal: 0, iva: 0, total: 0,
+    }), disponibles);
+  assert.strictEqual(d.logo, '[[LOGO]]');
+  assert.strictEqual(d.marcas, '[[MARCAS]]');
+  assert.strictEqual(d.firma, '', 'la firma no estaba disponible');
+});
+
+prueba('imagenesDeCotizacion_ no toca Drive sin IDs configurados', () => {
+  igual(sandbox.imagenesDeCotizacion_({}), {});
+});
+
+prueba('escaparBusqueda_ protege los corchetes de las marcas', () => {
+  // findText recibe una expresión regular: sin escapar, [[LOGO]] sería una
+  // clase de caracteres y no encontraría nada.
+  assert.strictEqual(
+    sandbox.escaparBusqueda_('[[LOGO]]'), '\\[\\[LOGO\\]\\]');
+});
+
+prueba('la plantilla coloca las tres marcas y no lleva etiquetas img', () => {
+  const html = fs.readFileSync(path.join(SRC, 'plantilla.html'), 'utf8');
+  ['logo', 'firma', 'marcas'].forEach((clave) => {
+    assert.ok(html.includes('d.' + clave),
+      'la plantilla debe colocar d.' + clave);
+  });
+  // Las imágenes las inserta 03_Pdf.js sobre el Documento ya convertido:
+  // ningún conversor de HTML de Google incrusta un <img> por su cuenta.
+  assert.ok(!/<img\b/i.test(html), 'la plantilla no debe llevar <img>');
+});
+
+prueba('los estilos de la plantilla van en línea', () => {
+  // El importador de HTML de Documentos ignora las clases de un <style>.
+  const html = fs.readFileSync(path.join(SRC, 'plantilla.html'), 'utf8');
+  const conClase = html.match(/<(?:table|tr|td|p|span|div)\b[^>]*\sclass=/gi);
+  assert.deepStrictEqual(conClase, null,
+    'usa style="..." en cada elemento, no clases');
 });
 
 prueba('el IVA de la proforma de referencia es el 15% vigente', () => {

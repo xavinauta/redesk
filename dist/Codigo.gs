@@ -16,8 +16,8 @@
 /**
  * REDESK — Automatización de cotizaciones
  * ---------------------------------------
- * 00_Config.js — nombres de hojas, valores por defecto y acceso a la
- * hoja "Config".
+ * 00_Config.js — nombres de hojas, valores por defecto, acceso a la hoja
+ * "Config" y utilidades comunes de Drive y de fórmulas.
  *
  * Toda la configuración editable vive en la hoja "Config" del mismo
  * archivo de Google Sheets, de modo que se pueda cambiar sin tocar código.
@@ -128,6 +128,8 @@ const CONFIG_DEFECTO = [
   ['LOGO_ARCHIVO_ID', '', 'ID en Drive del logo de REDESK (assets/logo-redesk.png)', '@'],
   ['FIRMA_ARCHIVO_ID', '', 'ID en Drive de la imagen de la firma. Vacío = sólo el nombre', '@'],
   ['MARCAS_ARCHIVO_ID', '', 'ID en Drive de la franja de marcas (assets/marcas.png)', '@'],
+
+  ['MOTOR_PDF', 'DOCS', 'DOCS = vía Documento de Google, con imágenes. HTML = conversión directa, más fiel pero sin logo ni firma', ''],
 
   ['COLOR_ACENTO', '#8EAADB', 'Relleno del encabezado de la tabla', ''],
   ['COLOR_DESTACADO', '#FF0000', 'Color del número de proforma y del total', ''],
@@ -253,6 +255,98 @@ function formatearNumero_(n, anio, formato) {
     .replace(/\{n4\}/g, ('0000' + n).slice(-4))
     .replace(/\{n\}/g, String(n))
     .replace(/\{aaaa\}/g, String(anio));
+}
+
+/** Versión del servicio avanzado de Drive que respondió, una vez detectada. */
+let _versionDrive = null;
+
+/**
+ * Ejecuta una operación contra Drive probando las dos versiones de la API.
+ *
+ * El editor de Apps Script ofrece la v2 o la v3 según la cuenta, y cada una
+ * nombra distinto los campos de la petición. Se prueba la que funcionó antes
+ * y, la primera vez, ambas.
+ *
+ * @param {function(string): T} operacion recibe 'v2' o 'v3'
+ * @return {T}
+ * @template T
+ */
+function conVersionDrive_(operacion) {
+  if (typeof Drive === 'undefined') {
+    throw new Error(
+      'Falta activar el servicio avanzado de Drive. En el editor de Apps ' +
+      'Script: Servicios ▸ + ▸ Drive API, dejando el identificador en ' +
+      '"Drive". Sirve tanto la v2 como la v3.');
+  }
+
+  const versiones = _versionDrive ? [_versionDrive] : ['v2', 'v3'];
+  const errores = [];
+  for (let i = 0; i < versiones.length; i++) {
+    try {
+      const resultado = operacion(versiones[i]);
+      _versionDrive = versiones[i];
+      return resultado;
+    } catch (err) {
+      errores.push(versiones[i] + ': ' + (err && err.message ? err.message : err));
+    }
+  }
+  // Se informa de todos los intentos: con uno solo no se sabe si falló la
+  // forma de la petición o el archivo.
+  throw new Error('Drive rechazó la operación. ' + errores.join(' | '));
+}
+
+/**
+ * Sube un contenido a Drive convirtiéndolo en Documento de Google y devuelve
+ * el ID del documento creado.
+ *
+ * Se sube el contenido en vez de copiar el archivo de origen porque copiar
+ * con conversión sólo existe en la v2, y porque el servicio avanzado no
+ * siempre ve los archivos que sí ve DriveApp —unidades compartidas—, lo que
+ * da un "File not found" desconcertante.
+ *
+ * @param {!GoogleAppsScript.Base.Blob} contenido
+ * @param {string} nombre nombre del documento intermedio
+ * @param {string} idCarpeta carpeta donde dejarlo
+ * @param {{v2: (!Object|undefined), v3: (!Object|undefined)}=} extra
+ *     parámetros propios de cada versión, por ejemplo los de OCR
+ * @return {string} ID del documento creado
+ */
+function crearDocDesdeBlob_(contenido, nombre, idCarpeta, extra) {
+  const propios = extra || {};
+  return conVersionDrive_(function (version) {
+    if (version === 'v3') {
+      return Drive.Files.create(
+        {
+          name: nombre,
+          mimeType: MimeType.GOOGLE_DOCS,
+          parents: [idCarpeta],
+        },
+        contenido,
+        Object.assign({ supportsAllDrives: true }, propios.v3 || {})).id;
+    }
+    return Drive.Files.insert(
+      {
+        title: nombre,
+        mimeType: MimeType.GOOGLE_DOCS,
+        parents: [{ id: idCarpeta }],
+      },
+      contenido,
+      Object.assign({ convert: true, supportsAllDrives: true },
+        propios.v2 || {})).id;
+  });
+}
+
+/**
+ * Manda un archivo a la papelera sin romper el flujo si no se puede.
+ * @param {?string} id
+ */
+function descartar_(id) {
+  if (!id) return;
+  try {
+    DriveApp.getFileById(id).setTrashed(true);
+  } catch (err) {
+    console.error('No pude descartar el archivo temporal ' + id + ': ' + err);
+  }
 }
 
 /** Separador detectado, cacheado durante la ejecución. */
@@ -1175,39 +1269,235 @@ function generarPdfDeCotizacion_(c) {
   return carpeta.createFile(blob);
 }
 
+/** Marcas de posición que la plantilla deja donde va cada imagen. */
+const MARCA_IMAGEN = {
+  logo: '[[LOGO]]',
+  firma: '[[FIRMA]]',
+  marcas: '[[MARCAS]]',
+};
+
 /**
- * Renderiza plantilla.html con los datos de la cotización y devuelve el
- * blob del PDF ya nombrado.
+ * Genera el PDF de la cotización.
+ *
+ * El camino normal es HTML → Documento de Google → PDF, porque el conversor
+ * directo de HtmlService no sabe incrustar imágenes: deja el icono de imagen
+ * rota en su lugar. Convirtiendo a Documento se pueden insertar el logo, la
+ * firma y las marcas con la API de Documentos, que sí las incrusta.
+ *
+ * Si esa conversión falla se recurre a HtmlService, que produce el mismo
+ * documento sin imágenes antes que no producir nada.
  *
  * @param {!Object} c
  * @return {!GoogleAppsScript.Base.Blob}
  */
 function construirBlobPdf_(c) {
+  const nombre = nombreArchivo_(c);
+  const imagenes = imagenesDeCotizacion_(c.cfg);
+
+  if (String(c.cfg.MOTOR_PDF || 'DOCS').toUpperCase() !== 'HTML') {
+    try {
+      return pdfViaDocumento_(renderizarPlantilla_(c, imagenes), imagenes, nombre);
+    } catch (err) {
+      console.error('No pude convertir vía Documento de Google, uso ' +
+        'HtmlService y el PDF saldrá sin imágenes: ' + err);
+    }
+  }
+  // Sin marcas de imagen: HtmlService las imprimiría como texto suelto.
+  return pdfViaHtmlService_(renderizarPlantilla_(c, {}), nombre);
+}
+
+/**
+ * Evalúa plantilla.html con los datos de la cotización.
+ * @param {!Object} c
+ * @param {!Object<string, !Object>} imagenes las que se van a insertar
+ * @return {string} HTML
+ */
+function renderizarPlantilla_(c, imagenes) {
   const t = HtmlService.createTemplateFromFile('plantilla');
-  t.d = datosPlantilla_(c);
-  return t.evaluate().getAs(MimeType.PDF).setName(nombreArchivo_(c));
+  t.d = datosPlantilla_(c, imagenes);
+  return t.evaluate().getContent();
+}
+
+/**
+ * Convierte el HTML en Documento de Google, sustituye las marcas por las
+ * imágenes y exporta el resultado a PDF.
+ *
+ * @param {string} html
+ * @param {!Object<string, !Object>} imagenes
+ * @param {string} nombre
+ * @return {!GoogleAppsScript.Base.Blob}
+ */
+function pdfViaDocumento_(html, imagenes, nombre) {
+  const temporal = subcarpeta_(carpetaCotizaciones_(), '_temp');
+  const contenido = Utilities.newBlob(html, MimeType.HTML, nombre + '.html');
+  const idDoc = crearDocDesdeBlob_(contenido, 'tmp ' + nombre, temporal.getId());
+
+  try {
+    prepararDocumento_(idDoc, imagenes);
+    return DriveApp.getFileById(idDoc).getAs(MimeType.PDF).setName(nombre);
+  } finally {
+    descartar_(idDoc);
+  }
+}
+
+/**
+ * Ajusta la página del documento intermedio e inserta las imágenes.
+ *
+ * El importador de HTML deja tamaño carta y espaciado entre párrafos; se
+ * fuerza A4 con márgenes estrechos y sin separación, para que la proforma
+ * quepa en una hoja como la que ya se envía.
+ *
+ * @param {string} idDoc
+ * @param {!Object<string, !Object>} imagenes
+ */
+function prepararDocumento_(idDoc, imagenes) {
+  const doc = DocumentApp.openById(idDoc);
+  const cuerpo = doc.getBody();
+
+  cuerpo.setPageWidth(595).setPageHeight(842); // A4 en puntos
+  cuerpo.setMarginTop(28).setMarginBottom(24)
+    .setMarginLeft(34).setMarginRight(34);
+  cuerpo.setAttributes(atributosSinEspaciado_());
+
+  Object.keys(imagenes).forEach(function (clave) {
+    insertarImagen_(cuerpo, imagenes[clave]);
+  });
+
+  doc.saveAndClose();
+}
+
+/**
+ * Atributos de párrafo sin espacio arriba ni abajo.
+ * @return {!Object}
+ */
+function atributosSinEspaciado_() {
+  const atributos = {};
+  atributos[DocumentApp.Attribute.SPACING_BEFORE] = 0;
+  atributos[DocumentApp.Attribute.SPACING_AFTER] = 0;
+  return atributos;
+}
+
+/**
+ * Sustituye una marca de posición por su imagen, a lo ancho indicado.
+ * @param {!GoogleAppsScript.Document.Body} cuerpo
+ * @param {{marca: string, blob: !GoogleAppsScript.Base.Blob, ancho: number}} img
+ */
+function insertarImagen_(cuerpo, img) {
+  const hallazgo = cuerpo.findText(escaparBusqueda_(img.marca));
+  if (!hallazgo) return;
+
+  const parrafo = parrafoContenedor_(hallazgo.getElement());
+  if (!parrafo) return;
+
+  parrafo.clear();
+  const insertada = parrafo.appendInlineImage(img.blob);
+  const ancho = insertada.getWidth();
+  const alto = insertada.getHeight();
+  if (ancho > img.ancho) {
+    insertada.setWidth(img.ancho);
+    insertada.setHeight(Math.round(alto * img.ancho / ancho));
+  }
+}
+
+/**
+ * Sube por el árbol del documento hasta el párrafo que contiene un elemento.
+ * @param {!GoogleAppsScript.Document.Element} elemento
+ * @return {?GoogleAppsScript.Document.Paragraph}
+ */
+function parrafoContenedor_(elemento) {
+  let actual = elemento;
+  while (actual && actual.getType() !== DocumentApp.ElementType.PARAGRAPH) {
+    actual = actual.getParent();
+  }
+  return actual ? actual.asParagraph() : null;
+}
+
+/**
+ * findText recibe una expresión regular, así que los corchetes de las marcas
+ * hay que escaparlos.
+ * @param {string} texto
+ * @return {string}
+ */
+function escaparBusqueda_(texto) {
+  return String(texto).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Lee de Drive las imágenes configuradas, con el ancho máximo que les toca
+ * en la proforma.
+ *
+ * @param {!Object<string, *>} cfg
+ * @return {!Object<string, {marca: string, blob: !Object, ancho: number}>}
+ */
+function imagenesDeCotizacion_(cfg) {
+  const fuentes = [
+    ['logo', cfg.LOGO_ARCHIVO_ID, 150],
+    ['firma', cfg.FIRMA_ARCHIVO_ID, 160],
+    ['marcas', cfg.MARCAS_ARCHIVO_ID, 470],
+  ];
+  const mapa = {};
+  fuentes.forEach(function (f) {
+    const blob = blobDeDrive_(f[1]);
+    if (blob) mapa[f[0]] = { marca: MARCA_IMAGEN[f[0]], blob: blob, ancho: f[2] };
+  });
+  return mapa;
+}
+
+/**
+ * Devuelve el contenido de un archivo de Drive, o null si no se puede leer.
+ * @param {*} idArchivo
+ * @return {?GoogleAppsScript.Base.Blob}
+ */
+function blobDeDrive_(idArchivo) {
+  const id = String(idArchivo || '').trim();
+  if (!id) return null;
+  try {
+    return DriveApp.getFileById(id).getBlob();
+  } catch (err) {
+    // Una imagen que falta no debe impedir emitir la proforma.
+    console.error('No pude leer la imagen ' + id + ': ' + err);
+    return null;
+  }
+}
+
+/**
+ * Conversión directa de HtmlService. Respeta la maquetación pero no incrusta
+ * imágenes, así que se usa sólo como respaldo.
+ *
+ * @param {string} html
+ * @param {string} nombre
+ * @return {!GoogleAppsScript.Base.Blob}
+ */
+function pdfViaHtmlService_(html, nombre) {
+  return HtmlService.createHtmlOutput(html).getAs(MimeType.PDF).setName(nombre);
 }
 
 /**
  * Aplana la cotización a los campos que espera la plantilla, con los
- * importes ya formateados y las imágenes ya incrustadas (la plantilla no
- * debe hacer cálculos ni tocar Drive).
+ * importes ya formateados (la plantilla no debe hacer cálculos ni tocar
+ * Drive). Donde va una imagen deja su marca de posición, que se sustituye
+ * después sobre el Documento de Google.
  *
  * @param {!Object} c
+ * @param {!Object<string, !Object>=} imagenes las que se podrán insertar
  * @return {!Object}
  */
-function datosPlantilla_(c) {
+function datosPlantilla_(c, imagenes) {
   const cfg = c.cfg;
   const cl = c.datosCliente;
+  const disponibles = imagenes || {};
+  const marca = function (clave) {
+    return disponibles[clave] ? MARCA_IMAGEN[clave] : '';
+  };
 
   return {
     acento: String(cfg.COLOR_ACENTO || '#8EAADB'),
     destacado: String(cfg.COLOR_DESTACADO || '#FF0000'),
     enlace: String(cfg.COLOR_ENLACE || '#0563C1'),
 
-    logo: imagenIncrustada_(cfg.LOGO_ARCHIVO_ID),
-    firma: imagenIncrustada_(cfg.FIRMA_ARCHIVO_ID),
-    marcas: imagenIncrustada_(cfg.MARCAS_ARCHIVO_ID),
+    logo: marca('logo'),
+    firma: marca('firma'),
+    marcas: marca('marcas'),
 
     empresa: String(cfg.EMPRESA_NOMBRE || ''),
     direccion: String(cfg.EMPRESA_DIRECCION || ''),
@@ -1247,29 +1537,6 @@ function datosPlantilla_(c) {
     garantia: c.garantia,
     validez: c.validez,
   };
-}
-
-/**
- * Devuelve un archivo de Drive como URI de datos para incrustarlo en el PDF.
- *
- * Se incrusta en vez de enlazar porque el conversor de HtmlService no
- * descarga imágenes de Drive: un enlace saldría como hueco en blanco.
- *
- * @param {*} idArchivo ID del archivo, o vacío
- * @return {string} el URI de datos, o cadena vacía si no hay imagen
- */
-function imagenIncrustada_(idArchivo) {
-  const id = String(idArchivo || '').trim();
-  if (!id) return '';
-  try {
-    const blob = DriveApp.getFileById(id).getBlob();
-    return 'data:' + blob.getContentType() + ';base64,' +
-      Utilities.base64Encode(blob.getBytes());
-  } catch (err) {
-    // Una imagen que falta no debe impedir emitir la proforma.
-    console.error('No pude leer la imagen ' + id + ': ' + err);
-    return '';
-  }
 }
 
 /**
@@ -1821,57 +2088,33 @@ function importarPreciosProveedor() {
     h.getRange(2, 1, h.getLastRow() - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm');
   }
 
-  let msg = nuevas.length
-    ? nuevas.length + ' archivo(s) importado(s).'
-    : 'No hay archivos nuevos que importar.';
-  if (fallidos.length) msg += '\n\nNo se pudieron leer:\n- ' + fallidos.join('\n- ');
+  const partes = [];
+  if (nuevas.length) partes.push(nuevas.length + ' archivo(s) importado(s).');
+  if (fallidos.length) {
+    partes.push('No se pudieron leer:\n- ' + fallidos.join('\n- '));
+  }
+  if (!partes.length) partes.push('No hay archivos nuevos que importar.');
+  const msg = partes.join('\n\n');
 
   SpreadsheetApp.getUi().alert('Precios de proveedor', msg,
     SpreadsheetApp.getUi().ButtonSet.OK);
   if (nuevas.length) libro_().setActiveSheet(h);
 }
 
-/** Versión del servicio de Drive que respondió, una vez detectada. */
-let _versionDrive = null;
-
 /**
- * Arma la petición de copia con OCR para una versión concreta de la API de
- * Drive. Las dos versiones nombran distinto los mismos campos, y ésa es la
- * única diferencia entre ellas para lo que aquí se necesita.
- *
- * @param {string} nombre nombre del archivo original
- * @param {string} idCarpeta carpeta donde dejar el documento intermedio
- * @param {string} version 'v2' o 'v3'
- * @return {{recurso: !Object, opciones: !Object}}
+ * Parámetros de OCR propios de cada versión de la API de Drive.
+ * @return {{v2: !Object, v3: !Object}}
  */
-function peticionOcr_(nombre, idCarpeta, version) {
-  const titulo = 'OCR ' + nombre;
-  if (version === 'v3') {
-    return {
-      recurso: {
-        name: titulo,
-        mimeType: MimeType.GOOGLE_DOCS,
-        parents: [idCarpeta],
-      },
-      opciones: { ocrLanguage: 'es' },
-    };
-  }
+function opcionesOcr_() {
   return {
-    recurso: {
-      title: titulo,
-      mimeType: MimeType.GOOGLE_DOCS,
-      parents: [{ id: idCarpeta }],
-    },
-    opciones: { convert: true, ocr: true, ocrLanguage: 'es' },
+    v2: { ocr: true, ocrLanguage: 'es' },
+    v3: { ocrLanguage: 'es' },
   };
 }
 
 /**
- * Extrae el texto de un PDF o imagen copiándolo a Documento de Google, que
- * es lo que dispara el OCR de Drive. El documento intermedio se descarta.
- *
- * El editor de Apps Script ofrece v2 o v3 del servicio de Drive según la
- * cuenta, así que se prueban las dos y se recuerda la que responda.
+ * Extrae el texto de un PDF o imagen subiéndolo como Documento de Google,
+ * que es lo que dispara el OCR de Drive. El documento intermedio se descarta.
  *
  * @param {string} idArchivo
  * @param {string} nombre
@@ -1879,35 +2122,14 @@ function peticionOcr_(nombre, idCarpeta, version) {
  * @return {string} texto reconocido
  */
 function ocrDeArchivo_(idArchivo, nombre, idCarpetaTemp) {
-  if (typeof Drive === 'undefined') {
-    throw new Error(
-      'Falta activar el servicio avanzado de Drive. En el editor de Apps ' +
-      'Script: Servicios ▸ + ▸ Drive API, dejando el identificador en ' +
-      '"Drive". Sirve tanto la v2 como la v3.');
+  const contenido = DriveApp.getFileById(idArchivo).getBlob();
+  const idDoc = crearDocDesdeBlob_(
+    contenido, 'OCR ' + nombre, idCarpetaTemp, opcionesOcr_());
+  try {
+    return DocumentApp.openById(idDoc).getBody().getText();
+  } finally {
+    descartar_(idDoc);
   }
-
-  const versiones = _versionDrive ? [_versionDrive] : ['v2', 'v3'];
-  let ultimoError = null;
-
-  for (let i = 0; i < versiones.length; i++) {
-    let idDoc = null;
-    try {
-      const p = peticionOcr_(nombre, idCarpetaTemp, versiones[i]);
-      idDoc = Drive.Files.copy(p.recurso, idArchivo, p.opciones).id;
-      const texto = DocumentApp.openById(idDoc).getBody().getText();
-      _versionDrive = versiones[i];
-      return texto;
-    } catch (err) {
-      ultimoError = err;
-    } finally {
-      if (idDoc) {
-        try {
-          DriveApp.getFileById(idDoc).setTrashed(true);
-        } catch (err2) { /* si no se puede borrar, queda en _ocr_temp */ }
-      }
-    }
-  }
-  throw ultimoError;
 }
 
 /**

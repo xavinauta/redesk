@@ -249,9 +249,20 @@ Lo que depende de Sheets, Drive y Gmail se prueba ejecutando el menú.
   proforma, el PDF anterior va a la papelera para no dejar dos versiones.
 - **`Generar PDF` valida antes de emitir**: bloquea si falta el cliente, si no
   hay ítems, o si algún ítem quedó sin precio o sin cantidad.
-- **El PDF se arma con `HtmlService`**, cuyo motor sólo entiende CSS sencillo.
-  En `plantilla.html` usa tablas, bordes y colores; flexbox y grid no se
-  renderizan.
+- **El PDF se arma pasando por un Documento de Google**: el HTML se convierte
+  a Documento, se le insertan el logo, la firma y las marcas con la API de
+  Documentos, y se exporta a PDF. Ese rodeo existe porque **ningún conversor
+  de HTML de Google incrusta imágenes**: el conversor directo de
+  `HtmlService` deja el icono de imagen rota en su lugar.
+  `Config ▸ MOTOR_PDF` permite forzar `HTML` (más fiel a la maquetación, pero
+  sin logo ni firma); si la conversión vía Documento falla, se recurre a él
+  automáticamente.
+- **Al editar `plantilla.html`, los estilos van en línea.** El importador de
+  HTML de Documentos ignora las clases de un bloque `<style>`, así que cada
+  elemento lleva su `style="..."`. Y donde va una imagen se escribe su marca
+  —`[[LOGO]]`, `[[FIRMA]]`, `[[MARCAS]]`— sola en su párrafo; `03_Pdf.js` la
+  sustituye por la imagen sobre el documento ya convertido. Dos pruebas lo
+  vigilan.
 - **Las fórmulas se adaptan al idioma de la hoja.** Donde el separador
   decimal es la coma —español, portugués, alemán…— Google Sheets separa los
   argumentos con `;`, y una fórmula escrita con `,` da `#ERROR!`. El

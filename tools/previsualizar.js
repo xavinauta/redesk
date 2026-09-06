@@ -54,22 +54,30 @@ function compilar(plantilla) {
   const _esc = (v) => String(v)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  // Las marcas de imagen llegan ya como <img>: se dejan pasar sin escapar
+  // para poder verlas; todo lo demás se escapa como en HtmlService.
+  const escSalvoImagen = (v) =>
+    String(v).indexOf('<img ') === 0 ? String(v) : _esc(v);
   const render = new Function('d', '_esc', cuerpo);
-  return (d) => render(d, _esc);
+  return (d) => render(d, escSalvoImagen);
 }
 
 /** Datos tomados de la proforma IMPORTADORA TOMEBAMBA - EQUIPO PORTABLE DELL. */
 function datosDeMuestra() {
-  const dataUri = (rel) => {
+  const imagen = (rel, ancho) => {
     const abs = path.join(RAIZ, rel);
     if (!fs.existsSync(abs)) return '';
-    return 'data:image/png;base64,' + fs.readFileSync(abs).toString('base64');
+    const uri = 'data:image/png;base64,' + fs.readFileSync(abs).toString('base64');
+    return `<img src="${uri}" style="width:${ancho}pt">`;
   };
   return {
     acento: '#8EAADB', destacado: '#FF0000', enlace: '#0563C1',
-    logo: dataUri('assets/logo-redesk.png'),
+    // La plantilla deja marcas de posición; aquí se pintan como imágenes
+    // para poder ver el resultado. En el PDF real las inserta 03_Pdf.js
+    // sobre el Documento de Google ya convertido.
+    logo: imagen('assets/logo-redesk.png', 150),
     firma: '',
-    marcas: dataUri('assets/marcas.png'),
+    marcas: imagen('assets/marcas.png', 470),
     empresa: 'REDESK Asesores y Servicios',
     direccion: 'LUIS MALO Y ENRIQUE MALO ESQ., CDLA. MUTUALISTA AZUAY II, J25.',
     telefonos: '0995108229 / 0996746927',

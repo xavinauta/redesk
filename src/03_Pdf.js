@@ -39,39 +39,235 @@ function generarPdfDeCotizacion_(c) {
   return carpeta.createFile(blob);
 }
 
+/** Marcas de posición que la plantilla deja donde va cada imagen. */
+const MARCA_IMAGEN = {
+  logo: '[[LOGO]]',
+  firma: '[[FIRMA]]',
+  marcas: '[[MARCAS]]',
+};
+
 /**
- * Renderiza plantilla.html con los datos de la cotización y devuelve el
- * blob del PDF ya nombrado.
+ * Genera el PDF de la cotización.
+ *
+ * El camino normal es HTML → Documento de Google → PDF, porque el conversor
+ * directo de HtmlService no sabe incrustar imágenes: deja el icono de imagen
+ * rota en su lugar. Convirtiendo a Documento se pueden insertar el logo, la
+ * firma y las marcas con la API de Documentos, que sí las incrusta.
+ *
+ * Si esa conversión falla se recurre a HtmlService, que produce el mismo
+ * documento sin imágenes antes que no producir nada.
  *
  * @param {!Object} c
  * @return {!GoogleAppsScript.Base.Blob}
  */
 function construirBlobPdf_(c) {
+  const nombre = nombreArchivo_(c);
+  const imagenes = imagenesDeCotizacion_(c.cfg);
+
+  if (String(c.cfg.MOTOR_PDF || 'DOCS').toUpperCase() !== 'HTML') {
+    try {
+      return pdfViaDocumento_(renderizarPlantilla_(c, imagenes), imagenes, nombre);
+    } catch (err) {
+      console.error('No pude convertir vía Documento de Google, uso ' +
+        'HtmlService y el PDF saldrá sin imágenes: ' + err);
+    }
+  }
+  // Sin marcas de imagen: HtmlService las imprimiría como texto suelto.
+  return pdfViaHtmlService_(renderizarPlantilla_(c, {}), nombre);
+}
+
+/**
+ * Evalúa plantilla.html con los datos de la cotización.
+ * @param {!Object} c
+ * @param {!Object<string, !Object>} imagenes las que se van a insertar
+ * @return {string} HTML
+ */
+function renderizarPlantilla_(c, imagenes) {
   const t = HtmlService.createTemplateFromFile('plantilla');
-  t.d = datosPlantilla_(c);
-  return t.evaluate().getAs(MimeType.PDF).setName(nombreArchivo_(c));
+  t.d = datosPlantilla_(c, imagenes);
+  return t.evaluate().getContent();
+}
+
+/**
+ * Convierte el HTML en Documento de Google, sustituye las marcas por las
+ * imágenes y exporta el resultado a PDF.
+ *
+ * @param {string} html
+ * @param {!Object<string, !Object>} imagenes
+ * @param {string} nombre
+ * @return {!GoogleAppsScript.Base.Blob}
+ */
+function pdfViaDocumento_(html, imagenes, nombre) {
+  const temporal = subcarpeta_(carpetaCotizaciones_(), '_temp');
+  const contenido = Utilities.newBlob(html, MimeType.HTML, nombre + '.html');
+  const idDoc = crearDocDesdeBlob_(contenido, 'tmp ' + nombre, temporal.getId());
+
+  try {
+    prepararDocumento_(idDoc, imagenes);
+    return DriveApp.getFileById(idDoc).getAs(MimeType.PDF).setName(nombre);
+  } finally {
+    descartar_(idDoc);
+  }
+}
+
+/**
+ * Ajusta la página del documento intermedio e inserta las imágenes.
+ *
+ * El importador de HTML deja tamaño carta y espaciado entre párrafos; se
+ * fuerza A4 con márgenes estrechos y sin separación, para que la proforma
+ * quepa en una hoja como la que ya se envía.
+ *
+ * @param {string} idDoc
+ * @param {!Object<string, !Object>} imagenes
+ */
+function prepararDocumento_(idDoc, imagenes) {
+  const doc = DocumentApp.openById(idDoc);
+  const cuerpo = doc.getBody();
+
+  cuerpo.setPageWidth(595).setPageHeight(842); // A4 en puntos
+  cuerpo.setMarginTop(28).setMarginBottom(24)
+    .setMarginLeft(34).setMarginRight(34);
+  cuerpo.setAttributes(atributosSinEspaciado_());
+
+  Object.keys(imagenes).forEach(function (clave) {
+    insertarImagen_(cuerpo, imagenes[clave]);
+  });
+
+  doc.saveAndClose();
+}
+
+/**
+ * Atributos de párrafo sin espacio arriba ni abajo.
+ * @return {!Object}
+ */
+function atributosSinEspaciado_() {
+  const atributos = {};
+  atributos[DocumentApp.Attribute.SPACING_BEFORE] = 0;
+  atributos[DocumentApp.Attribute.SPACING_AFTER] = 0;
+  return atributos;
+}
+
+/**
+ * Sustituye una marca de posición por su imagen, a lo ancho indicado.
+ * @param {!GoogleAppsScript.Document.Body} cuerpo
+ * @param {{marca: string, blob: !GoogleAppsScript.Base.Blob, ancho: number}} img
+ */
+function insertarImagen_(cuerpo, img) {
+  const hallazgo = cuerpo.findText(escaparBusqueda_(img.marca));
+  if (!hallazgo) return;
+
+  const parrafo = parrafoContenedor_(hallazgo.getElement());
+  if (!parrafo) return;
+
+  parrafo.clear();
+  const insertada = parrafo.appendInlineImage(img.blob);
+  const ancho = insertada.getWidth();
+  const alto = insertada.getHeight();
+  if (ancho > img.ancho) {
+    insertada.setWidth(img.ancho);
+    insertada.setHeight(Math.round(alto * img.ancho / ancho));
+  }
+}
+
+/**
+ * Sube por el árbol del documento hasta el párrafo que contiene un elemento.
+ * @param {!GoogleAppsScript.Document.Element} elemento
+ * @return {?GoogleAppsScript.Document.Paragraph}
+ */
+function parrafoContenedor_(elemento) {
+  let actual = elemento;
+  while (actual && actual.getType() !== DocumentApp.ElementType.PARAGRAPH) {
+    actual = actual.getParent();
+  }
+  return actual ? actual.asParagraph() : null;
+}
+
+/**
+ * findText recibe una expresión regular, así que los corchetes de las marcas
+ * hay que escaparlos.
+ * @param {string} texto
+ * @return {string}
+ */
+function escaparBusqueda_(texto) {
+  return String(texto).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Lee de Drive las imágenes configuradas, con el ancho máximo que les toca
+ * en la proforma.
+ *
+ * @param {!Object<string, *>} cfg
+ * @return {!Object<string, {marca: string, blob: !Object, ancho: number}>}
+ */
+function imagenesDeCotizacion_(cfg) {
+  const fuentes = [
+    ['logo', cfg.LOGO_ARCHIVO_ID, 150],
+    ['firma', cfg.FIRMA_ARCHIVO_ID, 160],
+    ['marcas', cfg.MARCAS_ARCHIVO_ID, 470],
+  ];
+  const mapa = {};
+  fuentes.forEach(function (f) {
+    const blob = blobDeDrive_(f[1]);
+    if (blob) mapa[f[0]] = { marca: MARCA_IMAGEN[f[0]], blob: blob, ancho: f[2] };
+  });
+  return mapa;
+}
+
+/**
+ * Devuelve el contenido de un archivo de Drive, o null si no se puede leer.
+ * @param {*} idArchivo
+ * @return {?GoogleAppsScript.Base.Blob}
+ */
+function blobDeDrive_(idArchivo) {
+  const id = String(idArchivo || '').trim();
+  if (!id) return null;
+  try {
+    return DriveApp.getFileById(id).getBlob();
+  } catch (err) {
+    // Una imagen que falta no debe impedir emitir la proforma.
+    console.error('No pude leer la imagen ' + id + ': ' + err);
+    return null;
+  }
+}
+
+/**
+ * Conversión directa de HtmlService. Respeta la maquetación pero no incrusta
+ * imágenes, así que se usa sólo como respaldo.
+ *
+ * @param {string} html
+ * @param {string} nombre
+ * @return {!GoogleAppsScript.Base.Blob}
+ */
+function pdfViaHtmlService_(html, nombre) {
+  return HtmlService.createHtmlOutput(html).getAs(MimeType.PDF).setName(nombre);
 }
 
 /**
  * Aplana la cotización a los campos que espera la plantilla, con los
- * importes ya formateados y las imágenes ya incrustadas (la plantilla no
- * debe hacer cálculos ni tocar Drive).
+ * importes ya formateados (la plantilla no debe hacer cálculos ni tocar
+ * Drive). Donde va una imagen deja su marca de posición, que se sustituye
+ * después sobre el Documento de Google.
  *
  * @param {!Object} c
+ * @param {!Object<string, !Object>=} imagenes las que se podrán insertar
  * @return {!Object}
  */
-function datosPlantilla_(c) {
+function datosPlantilla_(c, imagenes) {
   const cfg = c.cfg;
   const cl = c.datosCliente;
+  const disponibles = imagenes || {};
+  const marca = function (clave) {
+    return disponibles[clave] ? MARCA_IMAGEN[clave] : '';
+  };
 
   return {
     acento: String(cfg.COLOR_ACENTO || '#8EAADB'),
     destacado: String(cfg.COLOR_DESTACADO || '#FF0000'),
     enlace: String(cfg.COLOR_ENLACE || '#0563C1'),
 
-    logo: imagenIncrustada_(cfg.LOGO_ARCHIVO_ID),
-    firma: imagenIncrustada_(cfg.FIRMA_ARCHIVO_ID),
-    marcas: imagenIncrustada_(cfg.MARCAS_ARCHIVO_ID),
+    logo: marca('logo'),
+    firma: marca('firma'),
+    marcas: marca('marcas'),
 
     empresa: String(cfg.EMPRESA_NOMBRE || ''),
     direccion: String(cfg.EMPRESA_DIRECCION || ''),
@@ -111,29 +307,6 @@ function datosPlantilla_(c) {
     garantia: c.garantia,
     validez: c.validez,
   };
-}
-
-/**
- * Devuelve un archivo de Drive como URI de datos para incrustarlo en el PDF.
- *
- * Se incrusta en vez de enlazar porque el conversor de HtmlService no
- * descarga imágenes de Drive: un enlace saldría como hueco en blanco.
- *
- * @param {*} idArchivo ID del archivo, o vacío
- * @return {string} el URI de datos, o cadena vacía si no hay imagen
- */
-function imagenIncrustada_(idArchivo) {
-  const id = String(idArchivo || '').trim();
-  if (!id) return '';
-  try {
-    const blob = DriveApp.getFileById(id).getBlob();
-    return 'data:' + blob.getContentType() + ';base64,' +
-      Utilities.base64Encode(blob.getBytes());
-  } catch (err) {
-    // Una imagen que falta no debe impedir emitir la proforma.
-    console.error('No pude leer la imagen ' + id + ': ' + err);
-    return '';
-  }
 }
 
 /**

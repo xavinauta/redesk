@@ -1,8 +1,8 @@
 /**
  * REDESK — Automatización de cotizaciones
  * ---------------------------------------
- * 00_Config.js — nombres de hojas, valores por defecto y acceso a la
- * hoja "Config".
+ * 00_Config.js — nombres de hojas, valores por defecto, acceso a la hoja
+ * "Config" y utilidades comunes de Drive y de fórmulas.
  *
  * Toda la configuración editable vive en la hoja "Config" del mismo
  * archivo de Google Sheets, de modo que se pueda cambiar sin tocar código.
@@ -113,6 +113,8 @@ const CONFIG_DEFECTO = [
   ['LOGO_ARCHIVO_ID', '', 'ID en Drive del logo de REDESK (assets/logo-redesk.png)', '@'],
   ['FIRMA_ARCHIVO_ID', '', 'ID en Drive de la imagen de la firma. Vacío = sólo el nombre', '@'],
   ['MARCAS_ARCHIVO_ID', '', 'ID en Drive de la franja de marcas (assets/marcas.png)', '@'],
+
+  ['MOTOR_PDF', 'DOCS', 'DOCS = vía Documento de Google, con imágenes. HTML = conversión directa, más fiel pero sin logo ni firma', ''],
 
   ['COLOR_ACENTO', '#8EAADB', 'Relleno del encabezado de la tabla', ''],
   ['COLOR_DESTACADO', '#FF0000', 'Color del número de proforma y del total', ''],
@@ -238,6 +240,98 @@ function formatearNumero_(n, anio, formato) {
     .replace(/\{n4\}/g, ('0000' + n).slice(-4))
     .replace(/\{n\}/g, String(n))
     .replace(/\{aaaa\}/g, String(anio));
+}
+
+/** Versión del servicio avanzado de Drive que respondió, una vez detectada. */
+let _versionDrive = null;
+
+/**
+ * Ejecuta una operación contra Drive probando las dos versiones de la API.
+ *
+ * El editor de Apps Script ofrece la v2 o la v3 según la cuenta, y cada una
+ * nombra distinto los campos de la petición. Se prueba la que funcionó antes
+ * y, la primera vez, ambas.
+ *
+ * @param {function(string): T} operacion recibe 'v2' o 'v3'
+ * @return {T}
+ * @template T
+ */
+function conVersionDrive_(operacion) {
+  if (typeof Drive === 'undefined') {
+    throw new Error(
+      'Falta activar el servicio avanzado de Drive. En el editor de Apps ' +
+      'Script: Servicios ▸ + ▸ Drive API, dejando el identificador en ' +
+      '"Drive". Sirve tanto la v2 como la v3.');
+  }
+
+  const versiones = _versionDrive ? [_versionDrive] : ['v2', 'v3'];
+  const errores = [];
+  for (let i = 0; i < versiones.length; i++) {
+    try {
+      const resultado = operacion(versiones[i]);
+      _versionDrive = versiones[i];
+      return resultado;
+    } catch (err) {
+      errores.push(versiones[i] + ': ' + (err && err.message ? err.message : err));
+    }
+  }
+  // Se informa de todos los intentos: con uno solo no se sabe si falló la
+  // forma de la petición o el archivo.
+  throw new Error('Drive rechazó la operación. ' + errores.join(' | '));
+}
+
+/**
+ * Sube un contenido a Drive convirtiéndolo en Documento de Google y devuelve
+ * el ID del documento creado.
+ *
+ * Se sube el contenido en vez de copiar el archivo de origen porque copiar
+ * con conversión sólo existe en la v2, y porque el servicio avanzado no
+ * siempre ve los archivos que sí ve DriveApp —unidades compartidas—, lo que
+ * da un "File not found" desconcertante.
+ *
+ * @param {!GoogleAppsScript.Base.Blob} contenido
+ * @param {string} nombre nombre del documento intermedio
+ * @param {string} idCarpeta carpeta donde dejarlo
+ * @param {{v2: (!Object|undefined), v3: (!Object|undefined)}=} extra
+ *     parámetros propios de cada versión, por ejemplo los de OCR
+ * @return {string} ID del documento creado
+ */
+function crearDocDesdeBlob_(contenido, nombre, idCarpeta, extra) {
+  const propios = extra || {};
+  return conVersionDrive_(function (version) {
+    if (version === 'v3') {
+      return Drive.Files.create(
+        {
+          name: nombre,
+          mimeType: MimeType.GOOGLE_DOCS,
+          parents: [idCarpeta],
+        },
+        contenido,
+        Object.assign({ supportsAllDrives: true }, propios.v3 || {})).id;
+    }
+    return Drive.Files.insert(
+      {
+        title: nombre,
+        mimeType: MimeType.GOOGLE_DOCS,
+        parents: [{ id: idCarpeta }],
+      },
+      contenido,
+      Object.assign({ convert: true, supportsAllDrives: true },
+        propios.v2 || {})).id;
+  });
+}
+
+/**
+ * Manda un archivo a la papelera sin romper el flujo si no se puede.
+ * @param {?string} id
+ */
+function descartar_(id) {
+  if (!id) return;
+  try {
+    DriveApp.getFileById(id).setTrashed(true);
+  } catch (err) {
+    console.error('No pude descartar el archivo temporal ' + id + ': ' + err);
+  }
 }
 
 /** Separador detectado, cacheado durante la ejecución. */

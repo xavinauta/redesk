@@ -1,227 +1,161 @@
 <!--
   Plantilla del PDF de la proforma.
 
-  Reproduce el documento que REDESK ya envía a sus clientes: logo arriba a la
-  izquierda, asunto como título, bloque Nombre / Atte / E-Mail frente a
-  FECHA / ASESOR, tabla CANTIDAD-TIPO-DESCRIPCION-PRECIOS-OBSERVACION,
+  Reproduce el documento que REDESK ya envía: logo arriba a la izquierda,
+  asunto como título, PROFORMA en rojo, bloque Nombre / Atte / E-Mail frente
+  a FECHA / ASESOR, tabla CANTIDAD-TIPO-DESCRIPCION-PRECIOS-OBSERVACION,
   totales a la derecha, condiciones Notas / Pago / Garantía / Validez con la
-  firma al costado, franja de marcas y pie con los datos de contacto.
+  firma al costado, franja de marcas y pie de contacto.
 
-  Se rellena desde 03_Pdf.js con el objeto `d`. Se convierte a PDF con
-  HtmlService, cuyo motor sólo soporta CSS sencillo: tablas, bordes, colores
-  y tipografías. No uses flexbox ni grid, no se renderizan.
+  DOS REGLAS AL EDITAR ESTE ARCHIVO:
 
-  Para cambiar el diseño edita sólo este archivo.
+  1. Los estilos van EN LÍNEA, en el atributo style de cada elemento. El
+     camino normal de generación convierte este HTML en Documento de Google,
+     y ese importador ignora las clases de un bloque <style>. Lo de abajo
+     está sólo para la previsualización y para el respaldo de HtmlService.
+
+  2. Donde va una imagen se escribe su marca —[[LOGO]], [[FIRMA]],
+     [[MARCAS]]— sola en su párrafo. 03_Pdf.js la sustituye por la imagen
+     de verdad sobre el documento ya convertido, porque ningún conversor de
+     HTML de Google incrusta imágenes por sí solo.
 -->
 <style>
-  body {
-    font-family: Arial, Helvetica, sans-serif;
-    font-size: 9.5pt;
-    color: #000000;
-    margin: 0;
-  }
-  table { border-collapse: collapse; width: 100%; }
-
-  .titulo {
-    font-size: 13pt;
-    font-weight: bold;
-    padding: 10px 0 4px 0;
-  }
-  .proforma {
-    text-align: right;
-    font-size: 12pt;
-    font-weight: bold;
-    padding-bottom: 6px;
-  }
-  .proforma .numero { color: <?= d.destacado ?>; }
-
-  table.datos { margin-bottom: 10px; }
-  table.datos td { padding: 3px 0; font-size: 10pt; vertical-align: top; }
-  table.datos td.et { font-weight: bold; width: 74px; }
-  table.datos td.et-der { font-weight: bold; width: 74px; text-align: right; }
-
-  table.items { margin-bottom: 0; }
-  table.items th {
-    background: <?= d.acento ?>;
-    font-size: 8.5pt;
-    font-weight: bold;
-    padding: 6px 4px;
-    border: 1px solid #000000;
-    text-align: center;
-  }
-  table.items td {
-    border: 1px solid #000000;
-    padding: 8px 6px;
-    font-size: 8.5pt;
-    line-height: 1.4;
-    vertical-align: top;
-  }
-  .cen { text-align: center; }
-  .der { text-align: right; }
-
-  table.totales { width: 250px; }
-  table.totales td {
-    padding: 4px 6px;
-    font-size: 10pt;
-    font-weight: bold;
-    border: 1px solid #000000;
-  }
-  table.totales td.et { text-align: right; border: 0; }
-  table.totales tr.total td { color: <?= d.destacado ?>; font-size: 11pt; }
-
-  table.cierre { margin-top: 18px; }
-  table.cierre td { vertical-align: top; }
-  table.condiciones td { padding: 3px 0; font-size: 10pt; }
-  table.condiciones td.et { font-weight: bold; width: 82px; }
-
-  .firma { text-align: center; }
-  .firma img { max-height: 62px; }
-  .firma .atentamente { text-align: left; font-size: 10pt; padding-bottom: 4px; }
-  .firma .nombre {
-    border-top: 1px solid #000000;
-    padding-top: 3px;
-    font-size: 10pt;
-  }
-
-  .marcas { margin-top: 22px; text-align: center; }
-  .marcas img { width: 88%; }
-
-  .pie {
-    margin-top: 8px;
-    border-top: 1px solid #000000;
-    padding-top: 5px;
-    font-size: 8.5pt;
-    text-align: center;
-  }
-  .pie a, .pie .enlace { color: <?= d.enlace ?>; }
-  .pie .direccion { margin-top: 3px; font-size: 8pt; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 9.5pt; color: #000; margin: 0; }
+  table { border-collapse: collapse; }
+  p { margin: 0; }
 </style>
 
-<table>
+<table style="width:100%; border-collapse:collapse;">
   <tr>
-    <td style="width:210px; vertical-align:top;">
+    <td style="width:34%; vertical-align:top; padding:0;">
       <? if (d.logo) { ?>
-        <img src="<?= d.logo ?>" style="max-height:64px;">
+        <p style="margin:0;"><?= d.logo ?></p>
       <? } else { ?>
-        <div style="font-size:15pt; font-weight:bold;"><?= d.empresa ?></div>
+        <p style="margin:0; font-size:15pt; font-weight:bold;"><?= d.empresa ?></p>
       <? } ?>
     </td>
-    <td>
-      <div class="titulo"><?= d.asunto ?></div>
-      <div class="proforma">
-        PROFORMA: <span class="numero"><?= d.numero ?></span>
-      </div>
+    <td style="width:66%; vertical-align:top; padding:0;">
+      <p style="margin:0 0 6pt 0; font-size:13pt; font-weight:bold;"><?= d.asunto ?></p>
+      <p style="margin:0; font-size:12pt; font-weight:bold; text-align:right;">
+        PROFORMA: <span style="color:<?= d.destacado ?>;"><?= d.numero ?></span>
+      </p>
     </td>
   </tr>
 </table>
 
-<table class="datos">
+<p style="margin:8pt 0 0 0;">&nbsp;</p>
+
+<table style="width:100%; border-collapse:collapse;">
   <tr>
-    <td class="et">Nombre:</td>
-    <td><?= d.clienteNombre ?></td>
-    <td class="et-der">FECHA:</td>
-    <td style="width:110px; text-align:right;"><?= d.fechaTexto ?></td>
+    <td style="width:12%; padding:2pt 0; font-size:10pt; font-weight:bold;">Nombre:</td>
+    <td style="width:53%; padding:2pt 0; font-size:10pt;"><?= d.clienteNombre ?></td>
+    <td style="width:15%; padding:2pt 0; font-size:10pt; font-weight:bold; text-align:right;">FECHA:</td>
+    <td style="width:20%; padding:2pt 0; font-size:10pt; text-align:right;"><?= d.fechaTexto ?></td>
   </tr>
   <tr>
-    <td class="et">Atte:</td>
-    <td><?= d.clienteAtte ?></td>
-    <td class="et-der">ASESOR:</td>
-    <td style="text-align:right;"><?= d.asesor ?></td>
+    <td style="padding:2pt 0; font-size:10pt; font-weight:bold;">Atte:</td>
+    <td style="padding:2pt 0; font-size:10pt;"><?= d.clienteAtte ?></td>
+    <td style="padding:2pt 0; font-size:10pt; font-weight:bold; text-align:right;">ASESOR:</td>
+    <td style="padding:2pt 0; font-size:10pt; text-align:right;"><?= d.asesor ?></td>
   </tr>
   <tr>
-    <td class="et">E-Mail:</td>
-    <td colspan="3"><?= d.clienteEmail ?></td>
+    <td style="padding:2pt 0; font-size:10pt; font-weight:bold;">E-Mail:</td>
+    <td colspan="3" style="padding:2pt 0; font-size:10pt;"><?= d.clienteEmail ?></td>
   </tr>
 </table>
 
-<table class="items">
+<p style="margin:10pt 0 0 0;">&nbsp;</p>
+
+<table border="1" cellspacing="0" cellpadding="4"
+       style="width:100%; border-collapse:collapse; border:1px solid #000000;">
   <tr>
-    <th style="width:56px;">CANTIDAD</th>
-    <th style="width:74px;">TIPO</th>
-    <th>DESCRIPCION</th>
-    <th style="width:66px;">PRECIO<br>UNITARIO</th>
-    <th style="width:66px;">PRECIO<br>TOTAL</th>
-    <th style="width:76px;">OBSERVACION</th>
+    <td width="8%" style="border:1px solid #000000; background-color:<?= d.acento ?>; font-size:8.5pt; font-weight:bold; text-align:center;">CANTIDAD</td>
+    <td width="11%" style="border:1px solid #000000; background-color:<?= d.acento ?>; font-size:8.5pt; font-weight:bold; text-align:center;">TIPO</td>
+    <td width="45%" style="border:1px solid #000000; background-color:<?= d.acento ?>; font-size:8.5pt; font-weight:bold; text-align:center;">DESCRIPCION</td>
+    <td width="11%" style="border:1px solid #000000; background-color:<?= d.acento ?>; font-size:8.5pt; font-weight:bold; text-align:center;">PRECIO UNITARIO</td>
+    <td width="11%" style="border:1px solid #000000; background-color:<?= d.acento ?>; font-size:8.5pt; font-weight:bold; text-align:center;">PRECIO TOTAL</td>
+    <td width="14%" style="border:1px solid #000000; background-color:<?= d.acento ?>; font-size:8.5pt; font-weight:bold; text-align:center;">OBSERVACION</td>
   </tr>
   <? for (var i = 0; i < d.items.length; i++) { var it = d.items[i]; ?>
   <tr>
-    <td class="cen"><?= it.cantidad ?></td>
-    <td class="cen"><?= it.tipo ?></td>
-    <td><?!= it.descripcionHtml ?></td>
-    <td class="der"><?= it.punitarioTexto ?></td>
-    <td class="der"><?= it.totalTexto ?></td>
-    <td class="cen"><?= it.observacion ?></td>
+    <td style="border:1px solid #000000; font-size:8.5pt; text-align:center; vertical-align:top;"><?= it.cantidad ?></td>
+    <td style="border:1px solid #000000; font-size:8.5pt; text-align:center; vertical-align:top;"><?= it.tipo ?></td>
+    <td style="border:1px solid #000000; font-size:8.5pt; vertical-align:top;"><?!= it.descripcionHtml ?></td>
+    <td style="border:1px solid #000000; font-size:8.5pt; text-align:right; vertical-align:top;"><?= it.punitarioTexto ?></td>
+    <td style="border:1px solid #000000; font-size:8.5pt; text-align:right; vertical-align:top;"><?= it.totalTexto ?></td>
+    <td style="border:1px solid #000000; font-size:8.5pt; text-align:center; vertical-align:top;"><?= it.observacion ?></td>
   </tr>
   <? } ?>
 </table>
 
-<table>
+<p style="margin:6pt 0 0 0;">&nbsp;</p>
+
+<table style="width:100%; border-collapse:collapse;">
   <tr>
-    <td></td>
-    <td style="width:250px; padding-top:6px;">
-      <table class="totales">
-        <tr>
-          <td class="et">SUBTOTAL:</td>
-          <td class="der"><?= d.subtotalTexto ?></td>
-        </tr>
-        <tr>
-          <td class="et">IVA:</td>
-          <td class="der"><?= d.ivaTexto ?></td>
-        </tr>
-        <tr class="total">
-          <td class="et">TOTAL:</td>
-          <td class="der"><?= d.totalTexto ?></td>
-        </tr>
-      </table>
-    </td>
+    <td style="width:62%; padding:0;">&nbsp;</td>
+    <td style="width:23%; padding:3pt 6pt; font-size:10pt; font-weight:bold; text-align:right;">SUBTOTAL:</td>
+    <td style="width:15%; padding:3pt 6pt; font-size:10pt; font-weight:bold; text-align:right; border:1px solid #000000;"><?= d.subtotalTexto ?></td>
+  </tr>
+  <tr>
+    <td style="padding:0;">&nbsp;</td>
+    <td style="padding:3pt 6pt; font-size:10pt; font-weight:bold; text-align:right;">IVA:</td>
+    <td style="padding:3pt 6pt; font-size:10pt; font-weight:bold; text-align:right; border:1px solid #000000;"><?= d.ivaTexto ?></td>
+  </tr>
+  <tr>
+    <td style="padding:0;">&nbsp;</td>
+    <td style="padding:3pt 6pt; font-size:11pt; font-weight:bold; text-align:right; color:<?= d.destacado ?>;">TOTAL:</td>
+    <td style="padding:3pt 6pt; font-size:11pt; font-weight:bold; text-align:right; color:<?= d.destacado ?>; border:1px solid #000000;"><?= d.totalTexto ?></td>
   </tr>
 </table>
 
-<table class="cierre">
+<p style="margin:12pt 0 0 0;">&nbsp;</p>
+
+<table style="width:100%; border-collapse:collapse;">
   <tr>
-    <td>
-      <table class="condiciones">
+    <td style="width:58%; vertical-align:top; padding:0;">
+      <table style="width:100%; border-collapse:collapse;">
         <tr>
-          <td class="et">Notas:</td>
-          <td><?!= d.notasHtml ?></td>
+          <td style="width:26%; padding:2pt 0; font-size:10pt; font-weight:bold;">Notas:</td>
+          <td style="padding:2pt 0; font-size:10pt;"><?!= d.notasHtml ?></td>
         </tr>
         <tr>
-          <td class="et">Pago:</td>
-          <td><?= d.pago ?></td>
+          <td style="padding:2pt 0; font-size:10pt; font-weight:bold;">Pago:</td>
+          <td style="padding:2pt 0; font-size:10pt;"><?= d.pago ?></td>
         </tr>
         <tr>
-          <td class="et">Garantía:</td>
-          <td><?= d.garantia ?></td>
+          <td style="padding:2pt 0; font-size:10pt; font-weight:bold;">Garantía:</td>
+          <td style="padding:2pt 0; font-size:10pt;"><?= d.garantia ?></td>
         </tr>
         <tr>
-          <td class="et">Validez:</td>
-          <td><?= d.validez ?></td>
+          <td style="padding:2pt 0; font-size:10pt; font-weight:bold;">Validez:</td>
+          <td style="padding:2pt 0; font-size:10pt;"><?= d.validez ?></td>
         </tr>
       </table>
     </td>
-    <td style="width:240px;">
-      <div class="firma">
-        <div class="atentamente">Atentamente:</div>
-        <? if (d.firma) { ?>
-          <img src="<?= d.firma ?>">
-        <? } else { ?>
-          <div style="height:52px;"></div>
-        <? } ?>
-        <div class="nombre"><?= d.representante ?></div>
-      </div>
+    <td style="width:42%; vertical-align:top; padding:0; text-align:center;">
+      <p style="margin:0 0 4pt 0; font-size:10pt; text-align:left;">Atentamente:</p>
+      <? if (d.firma) { ?>
+        <p style="margin:0; text-align:center;"><?= d.firma ?></p>
+      <? } else { ?>
+        <p style="margin:0;">&nbsp;</p>
+        <p style="margin:0;">&nbsp;</p>
+      <? } ?>
+      <p style="margin:0; font-size:10pt; text-align:center; border-top:1px solid #000000;">
+        <?= d.representante ?>
+      </p>
     </td>
   </tr>
 </table>
 
 <? if (d.marcas) { ?>
-<div class="marcas"><img src="<?= d.marcas ?>"></div>
+<p style="margin:16pt 0 0 0; text-align:center;"><?= d.marcas ?></p>
 <? } ?>
 
-<div class="pie">
-  <span class="enlace"><?= d.web ?></span>
+<p style="margin:8pt 0 0 0; font-size:8.5pt; text-align:center; border-top:1px solid #000000;">
+  <span style="color:<?= d.enlace ?>;"><?= d.web ?></span>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <span class="enlace"><?= d.email ?></span>
+  <span style="color:<?= d.enlace ?>;"><?= d.email ?></span>
   &nbsp;&nbsp;·&nbsp;&nbsp;
   <?= d.telefonos ?>
-  <div class="direccion"><?= d.direccion ?></div>
-</div>
+</p>
+<p style="margin:2pt 0 0 0; font-size:8pt; text-align:center;"><?= d.direccion ?></p>
