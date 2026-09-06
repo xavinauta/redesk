@@ -62,7 +62,7 @@ function importarPreciosProveedor() {
       archivo.getDateCreated(),
       proveedorDeNombre_(archivo.getName()),
       archivo.getName(),
-      '=HYPERLINK("' + archivo.getUrl() + '","Abrir")',
+      formula_('=HYPERLINK("' + archivo.getUrl() + '","Abrir")'),
       // Las celdas de Sheets admiten 50 000 caracteres; dejamos margen.
       texto.slice(0, 45000),
       id,

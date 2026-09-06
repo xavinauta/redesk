@@ -117,6 +117,67 @@ prueba('proveedorDeNombre_ separa el proveedor del resto del archivo', () => {
   assert.strictEqual(f('Tecnomega.pdf'), 'Tecnomega');
 });
 
+// ------------------------------------------------- idioma de las fórmulas
+
+prueba('cambiarSeparador_ deja las fórmulas intactas donde la coma vale', () => {
+  const f = '=IF($B$5="","",VLOOKUP($B$5,Clientes!$A:$J,3,FALSE))';
+  assert.strictEqual(sandbox.cambiarSeparador_(f, ','), f);
+});
+
+prueba('cambiarSeparador_ cambia a punto y coma fuera de los textos', () => {
+  assert.strictEqual(
+    sandbox.cambiarSeparador_('=ROUND(RC3*RC6,2)', ';'),
+    '=ROUND(RC3*RC6;2)');
+  assert.strictEqual(
+    sandbox.cambiarSeparador_('=IF($D5="","",COUNTA($D$5:$D5))', ';'),
+    '=IF($D5="";"";COUNTA($D$5:$D5))');
+});
+
+prueba('cambiarSeparador_ respeta las comas dentro de los textos', () => {
+  // Una coma entre comillas es parte del texto, no separa argumentos.
+  assert.strictEqual(
+    sandbox.cambiarSeparador_('=HYPERLINK("http://x/a,b","Abrir")', ';'),
+    '=HYPERLINK("http://x/a,b";"Abrir")');
+  assert.strictEqual(
+    sandbox.cambiarSeparador_('=IF(A1="Cuenca, Ecuador",1,2)', ';'),
+    '=IF(A1="Cuenca, Ecuador";1;2)');
+});
+
+prueba('toda fórmula que se escribe en la hoja pasa por formula_()', () => {
+  // Si una se escapa, en una hoja de coma decimal saldrá #ERROR!.
+  // La excepción es la fórmula sonda de separadorFormulas_(): es justo la
+  // que averigua el separador, así que tiene que ir con comas a propósito.
+  const SONDA = "'=SUM(1,1)'";
+  const sinAdaptar = [];
+  ARCHIVOS.forEach((archivo) => {
+    const texto = fs.readFileSync(path.join(SRC, archivo), 'utf8');
+    const re = /\.setFormula(?:R1C1)?\(\s*([^\n]*)/g;
+    let m;
+    while ((m = re.exec(texto)) !== null) {
+      const argumento = m[1].trim();
+      if (argumento.indexOf('formula_(') === 0) continue;
+      if (argumento.indexOf(SONDA) === 0) continue;
+      sinAdaptar.push(archivo + ': ' + argumento.slice(0, 60));
+    }
+  });
+  assert.deepStrictEqual(sinAdaptar, []);
+});
+
+prueba('ninguna fórmula lleva decimales escritos dentro', () => {
+  // En una hoja de coma decimal, un 0.15 dentro de la fórmula se lee mal.
+  // Los decimales van en Config y se referencian por rango con nombre.
+  const conDecimales = [];
+  ARCHIVOS.forEach((archivo) => {
+    const texto = fs.readFileSync(path.join(SRC, archivo), 'utf8');
+    const re = /'(=[^']*)'/g;
+    let m;
+    while ((m = re.exec(texto)) !== null) {
+      if (/\d\.\d/.test(m[1])) conDecimales.push(archivo + ': ' + m[1]);
+    }
+  });
+  assert.deepStrictEqual(conDecimales, []);
+});
+
 // -------------------------------------------------------------- OCR Drive
 
 prueba('peticionOcr_ usa los nombres de campo de Drive v2', () => {

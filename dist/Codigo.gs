@@ -150,6 +150,7 @@ const CONFIG_DEFECTO = [
 
   ['CARPETA_COTIZACIONES_ID', '', 'Carpeta de Drive de los PDF. La llena el instalador', '@'],
   ['CARPETA_PRECIOS_ID', '', 'Carpeta de los precios de proveedor. La llena el instalador', '@'],
+  ['SEPARADOR_FORMULAS', '', 'Separador de argumentos de las fórmulas: "," o ";". Vacío = detectar solo', ''],
   ['GMAIL_ALIAS', '', 'Alias desde el que se crea el borrador. Vacío = cuenta principal', ''],
   ['GMAIL_BUSQUEDA', 'newer_than:30d -in:chats -from:me (cotizando OR cotización OR cotizacion OR proforma OR cotizar)', 'Consulta de Gmail para detectar solicitudes', ''],
 ];
@@ -252,6 +253,86 @@ function formatearNumero_(n, anio, formato) {
     .replace(/\{n4\}/g, ('0000' + n).slice(-4))
     .replace(/\{n\}/g, String(n))
     .replace(/\{aaaa\}/g, String(anio));
+}
+
+/** Separador detectado, cacheado durante la ejecución. */
+let _separador = null;
+
+/**
+ * Separador de argumentos que entienden las fórmulas de esta hoja.
+ *
+ * Google Sheets analiza las fórmulas según el idioma del archivo: donde el
+ * separador decimal es la coma —español, portugués, alemán…— los argumentos
+ * se separan con punto y coma, y una fórmula escrita con comas da #ERROR!.
+ * Apps Script no traduce, así que hay que averiguarlo y escribir en consecuencia.
+ *
+ * Se comprueba con una fórmula de prueba en vez de deducirlo del idioma:
+ * la lista de idiomas afectados es larga y cambia.
+ *
+ * @return {string} "," o ";"
+ */
+function separadorFormulas_() {
+  if (_separador) return _separador;
+
+  const guardado = String(leerConfig().SEPARADOR_FORMULAS || '').trim();
+  if (guardado === ',' || guardado === ';') {
+    _separador = guardado;
+    return _separador;
+  }
+
+  const ss = libro_();
+  const activa = ss.getActiveSheet();
+  let sonda = null;
+  try {
+    sonda = ss.insertSheet('_sonda_' + Date.now());
+    sonda.getRange(1, 1).setFormula('=SUM(1,1)');
+    SpreadsheetApp.flush();
+    _separador = sonda.getRange(1, 1).getValue() === 2 ? ',' : ';';
+  } catch (err) {
+    _separador = ';';
+  } finally {
+    if (sonda) ss.deleteSheet(sonda);
+    if (activa) ss.setActiveSheet(activa);
+  }
+
+  escribirConfig_('SEPARADOR_FORMULAS', _separador);
+  return _separador;
+}
+
+/**
+ * Adapta una fórmula escrita con comas al separador de esta hoja.
+ *
+ * Las comas dentro de literales entre comillas se dejan intactas: forman
+ * parte del texto, no separan argumentos.
+ *
+ * No escribas decimales dentro de las fórmulas —0.15 y similares—: en un
+ * idioma de coma decimal se leerían mal. Ponlos en Config y refiérete a
+ * ellos con un rango con nombre.
+ *
+ * @param {string} formula fórmula en notación estándar, con comas
+ * @param {string} separador "," o ";"
+ * @return {string}
+ */
+function cambiarSeparador_(formula, separador) {
+  if (separador === ',') return formula;
+
+  let salida = '';
+  let enTexto = false;
+  for (let i = 0; i < formula.length; i++) {
+    const c = formula.charAt(i);
+    if (c === '"') enTexto = !enTexto;
+    salida += (c === ',' && !enTexto) ? separador : c;
+  }
+  return salida;
+}
+
+/**
+ * Atajo: adapta la fórmula al separador de esta hoja.
+ * @param {string} formula
+ * @return {string}
+ */
+function formula_(formula) {
+  return cambiarSeparador_(formula, separadorFormulas_());
 }
 
 /**
@@ -443,7 +524,8 @@ function crearHojaCatalogo_(ss) {
 
   // PVP calculado con una sola ARRAYFORMULA en I2, no con una fórmula por
   // fila: así getLastRow() sigue reflejando los productos reales y las
-  // búsquedas del catálogo no recorren mil filas vacías.
+  // búsquedas del catálogo no recorren mil filas vacías. formula_() adapta
+  // el separador de argumentos al idioma de la hoja.
   const cfg = leerConfig();
   const sobreVenta = String(cfg.MARGEN_SOBRE || 'COSTO').toUpperCase() === 'VENTA';
   const margen = 'IF($H$2:$H="",MARGEN_DEFECTO,$H$2:$H)';
@@ -452,7 +534,7 @@ function crearHojaCatalogo_(ss) {
     : '$G$2:$G*(1+' + margen + ')';
   h.getRange(2, CAT.PVP, filas, 1).clearContent();
   h.getRange(2, CAT.PVP).setFormula(
-    '=ARRAYFORMULA(IF($G$2:$G="","",ROUND(' + cuerpo + ',2)))');
+    formula_('=ARRAYFORMULA(IF($G$2:$G="","",ROUND(' + cuerpo + ',2)))'));
 
   h.getRange(2, CAT.PVP, filas, 1).setBackground('#F2F7FB');
   h.getRange(1, CAT.PVP).setNote('Columna calculada por una ARRAYFORMULA que ' +
@@ -520,9 +602,9 @@ function crearHojaCotizacion_(ss) {
     return '=IF($B$' + COT.FILA_CLIENTE + '="","",IFERROR(VLOOKUP($B$' +
       COT.FILA_CLIENTE + ",'" + HOJAS.CLIENTES + "'!$A:$J," + col + ',FALSE),""))';
   };
-  h.getRange(COT.FILA_ATTE, COT.COL_VALOR).setFormula(buscar(CLI.CONTACTO));
-  h.getRange(COT.FILA_EMAIL, COT.COL_VALOR).setFormula(buscar(CLI.EMAIL));
-  h.getRange(COT.FILA_CC, COT.COL_VALOR).setFormula(buscar(CLI.CC));
+  h.getRange(COT.FILA_ATTE, COT.COL_VALOR).setFormula(formula_(buscar(CLI.CONTACTO)));
+  h.getRange(COT.FILA_EMAIL, COT.COL_VALOR).setFormula(formula_(buscar(CLI.EMAIL)));
+  h.getRange(COT.FILA_CC, COT.COL_VALOR).setFormula(formula_(buscar(CLI.CC)));
   h.getRange(COT.FILA_ATTE, COT.COL_VALOR, 3, 1).setBackground('#F2F7FB');
 
   // Tabla de ítems, con las mismas columnas que la proforma en papel.
@@ -550,10 +632,10 @@ function crearHojaCotizacion_(ss) {
   // R1C1 para que cada fila apunte a su propia descripción y precio.
   // RC5 = Descripción, RC3 = Cantidad, RC6 = Precio unitario.
   h.getRange(p, COT.COL_ITEM, nItems, 1)
-    .setFormulaR1C1('=IF(RC5="","",COUNTA(R' + p + 'C5:RC5))')
+    .setFormulaR1C1(formula_('=IF(RC5="","",COUNTA(R' + p + 'C5:RC5))'))
     .setHorizontalAlignment('center');
   h.getRange(p, COT.COL_TOTAL, nItems, 1)
-    .setFormulaR1C1('=IF(RC5="","",ROUND(RC3*RC6,2))');
+    .setFormulaR1C1(formula_('=IF(RC5="","",ROUND(RC3*RC6,2))'));
 
   h.getRange(p, COT.COL_CANTIDAD, nItems, 1).setNumberFormat('#,##0.##')
     .setHorizontalAlignment('center');
@@ -587,7 +669,7 @@ function crearHojaCotizacion_(ss) {
   totales.forEach(function (t) {
     h.getRange(t[0], COT.COL_OBSERVACION).setValue(t[1])
       .setFontWeight('bold').setHorizontalAlignment('right');
-    h.getRange(t[0], COT.COL_TOTAL).setFormula(t[2])
+    h.getRange(t[0], COT.COL_TOTAL).setFormula(formula_(t[2]))
       .setNumberFormat('#,##0.00').setFontWeight('bold');
   });
   h.getRange(COT.FILA_TOTAL, COT.COL_OBSERVACION, 1, 2)
@@ -1298,7 +1380,8 @@ function leerSolicitudes() {
       cuerpo.slice(0, 800),
       detectarPlazo_(cuerpo),
       'Pendiente',
-      '=HYPERLINK("https://mail.google.com/mail/u/0/#inbox/' + id + '","Abrir")',
+      formula_('=HYPERLINK("https://mail.google.com/mail/u/0/#inbox/' + id +
+        '","Abrir")'),
       id,
     ]);
   });
@@ -1725,7 +1808,7 @@ function importarPreciosProveedor() {
       archivo.getDateCreated(),
       proveedorDeNombre_(archivo.getName()),
       archivo.getName(),
-      '=HYPERLINK("' + archivo.getUrl() + '","Abrir")',
+      formula_('=HYPERLINK("' + archivo.getUrl() + '","Abrir")'),
       // Las celdas de Sheets admiten 50 000 caracteres; dejamos margen.
       texto.slice(0, 45000),
       id,

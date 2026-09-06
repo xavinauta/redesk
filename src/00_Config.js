@@ -135,6 +135,7 @@ const CONFIG_DEFECTO = [
 
   ['CARPETA_COTIZACIONES_ID', '', 'Carpeta de Drive de los PDF. La llena el instalador', '@'],
   ['CARPETA_PRECIOS_ID', '', 'Carpeta de los precios de proveedor. La llena el instalador', '@'],
+  ['SEPARADOR_FORMULAS', '', 'Separador de argumentos de las fórmulas: "," o ";". Vacío = detectar solo', ''],
   ['GMAIL_ALIAS', '', 'Alias desde el que se crea el borrador. Vacío = cuenta principal', ''],
   ['GMAIL_BUSQUEDA', 'newer_than:30d -in:chats -from:me (cotizando OR cotización OR cotizacion OR proforma OR cotizar)', 'Consulta de Gmail para detectar solicitudes', ''],
 ];
@@ -237,6 +238,86 @@ function formatearNumero_(n, anio, formato) {
     .replace(/\{n4\}/g, ('0000' + n).slice(-4))
     .replace(/\{n\}/g, String(n))
     .replace(/\{aaaa\}/g, String(anio));
+}
+
+/** Separador detectado, cacheado durante la ejecución. */
+let _separador = null;
+
+/**
+ * Separador de argumentos que entienden las fórmulas de esta hoja.
+ *
+ * Google Sheets analiza las fórmulas según el idioma del archivo: donde el
+ * separador decimal es la coma —español, portugués, alemán…— los argumentos
+ * se separan con punto y coma, y una fórmula escrita con comas da #ERROR!.
+ * Apps Script no traduce, así que hay que averiguarlo y escribir en consecuencia.
+ *
+ * Se comprueba con una fórmula de prueba en vez de deducirlo del idioma:
+ * la lista de idiomas afectados es larga y cambia.
+ *
+ * @return {string} "," o ";"
+ */
+function separadorFormulas_() {
+  if (_separador) return _separador;
+
+  const guardado = String(leerConfig().SEPARADOR_FORMULAS || '').trim();
+  if (guardado === ',' || guardado === ';') {
+    _separador = guardado;
+    return _separador;
+  }
+
+  const ss = libro_();
+  const activa = ss.getActiveSheet();
+  let sonda = null;
+  try {
+    sonda = ss.insertSheet('_sonda_' + Date.now());
+    sonda.getRange(1, 1).setFormula('=SUM(1,1)');
+    SpreadsheetApp.flush();
+    _separador = sonda.getRange(1, 1).getValue() === 2 ? ',' : ';';
+  } catch (err) {
+    _separador = ';';
+  } finally {
+    if (sonda) ss.deleteSheet(sonda);
+    if (activa) ss.setActiveSheet(activa);
+  }
+
+  escribirConfig_('SEPARADOR_FORMULAS', _separador);
+  return _separador;
+}
+
+/**
+ * Adapta una fórmula escrita con comas al separador de esta hoja.
+ *
+ * Las comas dentro de literales entre comillas se dejan intactas: forman
+ * parte del texto, no separan argumentos.
+ *
+ * No escribas decimales dentro de las fórmulas —0.15 y similares—: en un
+ * idioma de coma decimal se leerían mal. Ponlos en Config y refiérete a
+ * ellos con un rango con nombre.
+ *
+ * @param {string} formula fórmula en notación estándar, con comas
+ * @param {string} separador "," o ";"
+ * @return {string}
+ */
+function cambiarSeparador_(formula, separador) {
+  if (separador === ',') return formula;
+
+  let salida = '';
+  let enTexto = false;
+  for (let i = 0; i < formula.length; i++) {
+    const c = formula.charAt(i);
+    if (c === '"') enTexto = !enTexto;
+    salida += (c === ',' && !enTexto) ? separador : c;
+  }
+  return salida;
+}
+
+/**
+ * Atajo: adapta la fórmula al separador de esta hoja.
+ * @param {string} formula
+ * @return {string}
+ */
+function formula_(formula) {
+  return cambiarSeparador_(formula, separadorFormulas_());
 }
 
 /**

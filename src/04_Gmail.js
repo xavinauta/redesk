@@ -47,7 +47,8 @@ function leerSolicitudes() {
       cuerpo.slice(0, 800),
       detectarPlazo_(cuerpo),
       'Pendiente',
-      '=HYPERLINK("https://mail.google.com/mail/u/0/#inbox/' + id + '","Abrir")',
+      formula_('=HYPERLINK("https://mail.google.com/mail/u/0/#inbox/' + id +
+        '","Abrir")'),
       id,
     ]);
   });

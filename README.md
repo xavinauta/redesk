@@ -252,6 +252,13 @@ Lo que depende de Sheets, Drive y Gmail se prueba ejecutando el menú.
 - **El PDF se arma con `HtmlService`**, cuyo motor sólo entiende CSS sencillo.
   En `plantilla.html` usa tablas, bordes y colores; flexbox y grid no se
   renderizan.
+- **Las fórmulas se adaptan al idioma de la hoja.** Donde el separador
+  decimal es la coma —español, portugués, alemán…— Google Sheets separa los
+  argumentos con `;`, y una fórmula escrita con `,` da `#ERROR!`. El
+  instalador lo detecta con una fórmula de prueba y lo guarda en
+  `Config ▸ SEPARADOR_FORMULAS`. Si escribes fórmulas nuevas en el código,
+  pásalas por `formula_()` y no metas decimales dentro: ponlos en Config y
+  refiérelos con un rango con nombre.
 - **La proforma no lleva RUC**, ni el tuyo ni el del cliente, porque la que
   envías hoy tampoco lo lleva. Si lo necesitas, es añadir una fila en
   `plantilla.html` y una clave en `Config`.

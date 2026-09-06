@@ -155,7 +155,8 @@ function crearHojaCatalogo_(ss) {
 
   // PVP calculado con una sola ARRAYFORMULA en I2, no con una fórmula por
   // fila: así getLastRow() sigue reflejando los productos reales y las
-  // búsquedas del catálogo no recorren mil filas vacías.
+  // búsquedas del catálogo no recorren mil filas vacías. formula_() adapta
+  // el separador de argumentos al idioma de la hoja.
   const cfg = leerConfig();
   const sobreVenta = String(cfg.MARGEN_SOBRE || 'COSTO').toUpperCase() === 'VENTA';
   const margen = 'IF($H$2:$H="",MARGEN_DEFECTO,$H$2:$H)';
@@ -164,7 +165,7 @@ function crearHojaCatalogo_(ss) {
     : '$G$2:$G*(1+' + margen + ')';
   h.getRange(2, CAT.PVP, filas, 1).clearContent();
   h.getRange(2, CAT.PVP).setFormula(
-    '=ARRAYFORMULA(IF($G$2:$G="","",ROUND(' + cuerpo + ',2)))');
+    formula_('=ARRAYFORMULA(IF($G$2:$G="","",ROUND(' + cuerpo + ',2)))'));
 
   h.getRange(2, CAT.PVP, filas, 1).setBackground('#F2F7FB');
   h.getRange(1, CAT.PVP).setNote('Columna calculada por una ARRAYFORMULA que ' +
@@ -232,9 +233,9 @@ function crearHojaCotizacion_(ss) {
     return '=IF($B$' + COT.FILA_CLIENTE + '="","",IFERROR(VLOOKUP($B$' +
       COT.FILA_CLIENTE + ",'" + HOJAS.CLIENTES + "'!$A:$J," + col + ',FALSE),""))';
   };
-  h.getRange(COT.FILA_ATTE, COT.COL_VALOR).setFormula(buscar(CLI.CONTACTO));
-  h.getRange(COT.FILA_EMAIL, COT.COL_VALOR).setFormula(buscar(CLI.EMAIL));
-  h.getRange(COT.FILA_CC, COT.COL_VALOR).setFormula(buscar(CLI.CC));
+  h.getRange(COT.FILA_ATTE, COT.COL_VALOR).setFormula(formula_(buscar(CLI.CONTACTO)));
+  h.getRange(COT.FILA_EMAIL, COT.COL_VALOR).setFormula(formula_(buscar(CLI.EMAIL)));
+  h.getRange(COT.FILA_CC, COT.COL_VALOR).setFormula(formula_(buscar(CLI.CC)));
   h.getRange(COT.FILA_ATTE, COT.COL_VALOR, 3, 1).setBackground('#F2F7FB');
 
   // Tabla de ítems, con las mismas columnas que la proforma en papel.
@@ -262,10 +263,10 @@ function crearHojaCotizacion_(ss) {
   // R1C1 para que cada fila apunte a su propia descripción y precio.
   // RC5 = Descripción, RC3 = Cantidad, RC6 = Precio unitario.
   h.getRange(p, COT.COL_ITEM, nItems, 1)
-    .setFormulaR1C1('=IF(RC5="","",COUNTA(R' + p + 'C5:RC5))')
+    .setFormulaR1C1(formula_('=IF(RC5="","",COUNTA(R' + p + 'C5:RC5))'))
     .setHorizontalAlignment('center');
   h.getRange(p, COT.COL_TOTAL, nItems, 1)
-    .setFormulaR1C1('=IF(RC5="","",ROUND(RC3*RC6,2))');
+    .setFormulaR1C1(formula_('=IF(RC5="","",ROUND(RC3*RC6,2))'));
 
   h.getRange(p, COT.COL_CANTIDAD, nItems, 1).setNumberFormat('#,##0.##')
     .setHorizontalAlignment('center');
@@ -299,7 +300,7 @@ function crearHojaCotizacion_(ss) {
   totales.forEach(function (t) {
     h.getRange(t[0], COT.COL_OBSERVACION).setValue(t[1])
       .setFontWeight('bold').setHorizontalAlignment('right');
-    h.getRange(t[0], COT.COL_TOTAL).setFormula(t[2])
+    h.getRange(t[0], COT.COL_TOTAL).setFormula(formula_(t[2]))
       .setNumberFormat('#,##0.00').setFontWeight('bold');
   });
   h.getRange(COT.FILA_TOTAL, COT.COL_OBSERVACION, 1, 2)
