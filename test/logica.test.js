@@ -48,6 +48,16 @@ let pasadas = 0;
 const casos = [];
 function prueba(nombre, fn) { casos.push([nombre, fn]); }
 
+/**
+ * Compara estructuras salidas del contexto `vm`. Sus objetos y arrays llevan
+ * el prototipo de ese contexto, así que deepStrictEqual los rechaza aunque
+ * el contenido coincida; normalizar por JSON compara lo que importa.
+ */
+function igual(actual, esperado, mensaje) {
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(actual)), esperado, mensaje);
+}
+
 // ---------------------------------------------------------------- correos
 
 prueba('extraerEmail_ soporta ambos formatos de remitente', () => {
@@ -105,6 +115,43 @@ prueba('proveedorDeNombre_ separa el proveedor del resto del archivo', () => {
   assert.strictEqual(f('Siglo21 lista.jpg'), 'Siglo');
   // Sin separador se usa el nombre completo sin extensión.
   assert.strictEqual(f('Tecnomega.pdf'), 'Tecnomega');
+});
+
+// -------------------------------------------------------------- OCR Drive
+
+prueba('peticionOcr_ usa los nombres de campo de Drive v2', () => {
+  // El editor de Apps Script ofrece v2 en muchas cuentas: título, padres
+  // como objetos y conversión explícita.
+  const p = sandbox.peticionOcr_('lista.pdf', 'CARPETA1', 'v2');
+  assert.strictEqual(p.recurso.title, 'OCR lista.pdf');
+  assert.strictEqual(p.recurso.name, undefined, 'v2 no usa "name"');
+  igual(p.recurso.parents, [{ id: 'CARPETA1' }]);
+  assert.strictEqual(p.recurso.mimeType, 'application/vnd.google-apps.document');
+  igual(p.opciones, { convert: true, ocr: true, ocrLanguage: 'es' });
+});
+
+prueba('peticionOcr_ usa los nombres de campo de Drive v3', () => {
+  const p = sandbox.peticionOcr_('lista.pdf', 'CARPETA1', 'v3');
+  assert.strictEqual(p.recurso.name, 'OCR lista.pdf');
+  assert.strictEqual(p.recurso.title, undefined, 'v3 no usa "title"');
+  igual(p.recurso.parents, ['CARPETA1'], 'v3 pasa IDs sueltos');
+  igual(p.opciones, { ocrLanguage: 'es' });
+});
+
+prueba('peticionOcr_ trata cualquier versión desconocida como v2', () => {
+  // v2 es la que más cuentas ofrecen, así que es el respaldo razonable.
+  igual(sandbox.peticionOcr_('x.jpg', 'C', ''),
+    JSON.parse(JSON.stringify(sandbox.peticionOcr_('x.jpg', 'C', 'v2'))));
+});
+
+prueba('el manifiesto declara una versión de Drive que el código sabe armar', () => {
+  const manifiesto = JSON.parse(
+    fs.readFileSync(path.join(SRC, 'appsscript.json'), 'utf8'));
+  const drive = manifiesto.dependencies.enabledAdvancedServices
+    .find((s) => s.serviceId === 'drive');
+  assert.ok(drive, 'el manifiesto debe habilitar Drive');
+  assert.ok(['v2', 'v3'].includes(drive.version), drive.version);
+  assert.strictEqual(drive.userSymbol, 'Drive');
 });
 
 // ---------------------------------------------------------------- importes

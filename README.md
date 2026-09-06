@@ -75,11 +75,13 @@ clasp push
 ### 3. Activar la API de Drive
 
 Hace falta para el OCR de los precios de proveedor. En el editor de Apps
-Script: `Servicios ▸ +` → **Drive API**, versión **v3**, identificador
-`Drive`.
+Script: `Servicios ▸ +` → **Drive API**, dejando el identificador en `Drive`.
 
-Si subiste con `clasp` puede que ya esté activada por el manifiesto;
-compruébalo igual.
+**Sirve la v2 o la v3**, la que ofrezca tu cuenta: el editor no muestra las
+dos a todo el mundo. Las dos versiones nombran distinto los campos de la
+petición de copia (`title` y `parents: [{id}]` en v2, `name` y
+`parents: [id]` en v3), así que el código prueba ambas formas y recuerda la
+que responda. El manifiesto declara `v2` por ser la más extendida.
 
 ### 4. Instalar las hojas
 

@@ -1748,9 +1748,47 @@ function importarPreciosProveedor() {
   if (nuevas.length) libro_().setActiveSheet(h);
 }
 
+/** Versión del servicio de Drive que respondió, una vez detectada. */
+let _versionDrive = null;
+
+/**
+ * Arma la petición de copia con OCR para una versión concreta de la API de
+ * Drive. Las dos versiones nombran distinto los mismos campos, y ésa es la
+ * única diferencia entre ellas para lo que aquí se necesita.
+ *
+ * @param {string} nombre nombre del archivo original
+ * @param {string} idCarpeta carpeta donde dejar el documento intermedio
+ * @param {string} version 'v2' o 'v3'
+ * @return {{recurso: !Object, opciones: !Object}}
+ */
+function peticionOcr_(nombre, idCarpeta, version) {
+  const titulo = 'OCR ' + nombre;
+  if (version === 'v3') {
+    return {
+      recurso: {
+        name: titulo,
+        mimeType: MimeType.GOOGLE_DOCS,
+        parents: [idCarpeta],
+      },
+      opciones: { ocrLanguage: 'es' },
+    };
+  }
+  return {
+    recurso: {
+      title: titulo,
+      mimeType: MimeType.GOOGLE_DOCS,
+      parents: [{ id: idCarpeta }],
+    },
+    opciones: { convert: true, ocr: true, ocrLanguage: 'es' },
+  };
+}
+
 /**
  * Extrae el texto de un PDF o imagen copiándolo a Documento de Google, que
  * es lo que dispara el OCR de Drive. El documento intermedio se descarta.
+ *
+ * El editor de Apps Script ofrece v2 o v3 del servicio de Drive según la
+ * cuenta, así que se prueban las dos y se recuerda la que responda.
  *
  * @param {string} idArchivo
  * @param {string} nombre
@@ -1758,33 +1796,35 @@ function importarPreciosProveedor() {
  * @return {string} texto reconocido
  */
 function ocrDeArchivo_(idArchivo, nombre, idCarpetaTemp) {
-  let idDoc = null;
-  try {
-    const copia = Drive.Files.copy(
-      {
-        name: 'OCR ' + nombre,
-        mimeType: MimeType.GOOGLE_DOCS,
-        parents: [idCarpetaTemp],
-      },
-      idArchivo,
-      { ocrLanguage: 'es' });
-    idDoc = copia.id;
-    return DocumentApp.openById(idDoc).getBody().getText();
-  } catch (err) {
-    if (String(err).indexOf('Drive is not defined') !== -1) {
-      throw new Error(
-        'Falta activar el servicio avanzado de Drive. En el editor de ' +
-        'Apps Script: Servicios ▸ + ▸ Drive API ▸ v3, con el identificador ' +
-        '"Drive".');
-    }
-    throw err;
-  } finally {
-    if (idDoc) {
-      try {
-        DriveApp.getFileById(idDoc).setTrashed(true);
-      } catch (err2) { /* si no se puede borrar, queda en _ocr_temp */ }
+  if (typeof Drive === 'undefined') {
+    throw new Error(
+      'Falta activar el servicio avanzado de Drive. En el editor de Apps ' +
+      'Script: Servicios ▸ + ▸ Drive API, dejando el identificador en ' +
+      '"Drive". Sirve tanto la v2 como la v3.');
+  }
+
+  const versiones = _versionDrive ? [_versionDrive] : ['v2', 'v3'];
+  let ultimoError = null;
+
+  for (let i = 0; i < versiones.length; i++) {
+    let idDoc = null;
+    try {
+      const p = peticionOcr_(nombre, idCarpetaTemp, versiones[i]);
+      idDoc = Drive.Files.copy(p.recurso, idArchivo, p.opciones).id;
+      const texto = DocumentApp.openById(idDoc).getBody().getText();
+      _versionDrive = versiones[i];
+      return texto;
+    } catch (err) {
+      ultimoError = err;
+    } finally {
+      if (idDoc) {
+        try {
+          DriveApp.getFileById(idDoc).setTrashed(true);
+        } catch (err2) { /* si no se puede borrar, queda en _ocr_temp */ }
+      }
     }
   }
+  throw ultimoError;
 }
 
 /**
