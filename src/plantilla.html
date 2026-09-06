@@ -1,0 +1,249 @@
+<!--
+  Plantilla del PDF de la cotización.
+
+  Se rellena desde 03_Pdf.js con el objeto `d`. Se convierte a PDF con
+  HtmlService, cuyo motor sólo soporta CSS sencillo: tablas, bordes,
+  colores y tipografías. No uses flexbox ni grid, no se renderizan.
+
+  Para cambiar el diseño edita sólo este archivo.
+-->
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 10pt;
+    color: #222222;
+    margin: 0;
+  }
+  table { border-collapse: collapse; width: 100%; }
+  .cab td { vertical-align: top; padding: 0 0 10px 0; }
+  .empresa { font-size: 16pt; font-weight: bold; color: <?= d.color ?>; }
+  .empresa-datos { font-size: 8.5pt; color: #555555; line-height: 1.5; }
+  .caja-cot {
+    border: 1.5px solid <?= d.color ?>;
+    padding: 8px 12px;
+    text-align: center;
+    width: 200px;
+  }
+  .caja-cot .titulo {
+    font-size: 12pt; font-weight: bold; color: <?= d.color ?>;
+    letter-spacing: 2px;
+  }
+  .caja-cot .numero { font-size: 13pt; font-weight: bold; margin-top: 4px; }
+  .caja-cot .fecha { font-size: 8.5pt; color: #555555; margin-top: 2px; }
+
+  .bloque-cliente {
+    border: 1px solid #D0D7DE;
+    background: #F7F9FB;
+    padding: 8px 12px;
+    margin-bottom: 14px;
+  }
+  .bloque-cliente td { padding: 2px 0; font-size: 9.5pt; }
+  .etiqueta { color: #666666; width: 90px; }
+
+  table.items { margin-bottom: 12px; }
+  table.items th {
+    background: <?= d.color ?>;
+    color: #FFFFFF;
+    font-size: 9pt;
+    padding: 7px 6px;
+    text-align: left;
+    border: 1px solid <?= d.color ?>;
+  }
+  table.items td {
+    border: 1px solid #D0D7DE;
+    padding: 6px;
+    font-size: 9pt;
+    vertical-align: top;
+  }
+  table.items tr.par td { background: #F7F9FB; }
+  .der { text-align: right; }
+  .cen { text-align: center; }
+  .desc-marca { color: #666666; font-size: 8pt; }
+
+  table.totales { width: 300px; }
+  table.totales td { padding: 5px 8px; font-size: 10pt; }
+  table.totales td.et { text-align: right; color: #555555; }
+  table.totales td.im { text-align: right; width: 110px; border: 1px solid #D0D7DE; }
+  table.totales tr.total td {
+    background: <?= d.color ?>; color: #FFFFFF;
+    font-weight: bold; font-size: 11pt; border: 1px solid <?= d.color ?>;
+  }
+
+  .condiciones {
+    margin-top: 16px; border-top: 2px solid <?= d.color ?>; padding-top: 8px;
+  }
+  .condiciones h3 {
+    font-size: 9.5pt; color: <?= d.color ?>; margin: 0 0 6px 0;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .condiciones td { font-size: 9pt; padding: 3px 0; vertical-align: top; }
+  .condiciones td.et { color: #666666; width: 130px; }
+
+  .firma { margin-top: 34px; font-size: 9.5pt; }
+  .firma .linea {
+    border-top: 1px solid #333333; width: 240px; padding-top: 4px;
+  }
+  .firma .nombre { font-weight: bold; }
+  .firma .cargo { color: #666666; font-size: 8.5pt; }
+
+  .pie {
+    margin-top: 22px; border-top: 1px solid #D0D7DE; padding-top: 6px;
+    font-size: 8pt; color: #888888; text-align: center;
+  }
+</style>
+
+<table class="cab">
+  <tr>
+    <td>
+      <? if (d.logo) { ?>
+        <img src="<?= d.logo ?>" style="max-height:60px; margin-bottom:6px;">
+      <? } ?>
+      <div class="empresa"><?= d.empresa ?></div>
+      <div class="empresa-datos">
+        <? if (d.ruc) { ?>RUC: <?= d.ruc ?><br><? } ?>
+        <? if (d.direccion) { ?><?= d.direccion ?><br><? } ?>
+        <? if (d.ciudad) { ?><?= d.ciudad ?><br><? } ?>
+        <? if (d.telefonos) { ?>Tel: <?= d.telefonos ?><br><? } ?>
+        <? if (d.email) { ?><?= d.email ?><? } ?>
+        <? if (d.web) { ?> &nbsp;|&nbsp; <?= d.web ?><? } ?>
+      </div>
+    </td>
+    <td style="text-align:right; width:210px;">
+      <div class="caja-cot">
+        <div class="titulo">COTIZACIÓN</div>
+        <div class="numero"><?= d.numero ?></div>
+        <div class="fecha"><?= d.fechaTexto ?></div>
+      </div>
+    </td>
+  </tr>
+</table>
+
+<div class="bloque-cliente">
+  <table>
+    <tr>
+      <td class="etiqueta">Cliente:</td>
+      <td><strong><?= d.clienteNombre ?></strong></td>
+      <td class="etiqueta">RUC:</td>
+      <td><?= d.clienteRuc ?></td>
+    </tr>
+    <? if (d.clienteContacto || d.clienteEmail) { ?>
+    <tr>
+      <td class="etiqueta">Atención:</td>
+      <td><?= d.clienteContacto ?><? if (d.clienteCargo) { ?> — <?= d.clienteCargo ?><? } ?></td>
+      <td class="etiqueta">Correo:</td>
+      <td><?= d.clienteEmail ?></td>
+    </tr>
+    <? } ?>
+    <? if (d.clienteDireccion || d.clienteTelefono) { ?>
+    <tr>
+      <td class="etiqueta">Dirección:</td>
+      <td><?= d.clienteDireccion ?></td>
+      <td class="etiqueta">Teléfono:</td>
+      <td><?= d.clienteTelefono ?></td>
+    </tr>
+    <? } ?>
+    <? if (d.referencia) { ?>
+    <tr>
+      <td class="etiqueta">Referencia:</td>
+      <td colspan="3"><?= d.referencia ?></td>
+    </tr>
+    <? } ?>
+  </table>
+</div>
+
+<table class="items">
+  <tr>
+    <th style="width:26px;" class="cen">#</th>
+    <th style="width:46px;" class="cen">Cant.</th>
+    <th>Descripción</th>
+    <th style="width:80px;" class="der">P. Unit.</th>
+    <th style="width:52px;" class="der">Dcto.</th>
+    <th style="width:88px;" class="der">Total</th>
+  </tr>
+  <? for (var i = 0; i < d.items.length; i++) { var it = d.items[i]; ?>
+  <tr class="<?= i % 2 === 1 ? 'par' : '' ?>">
+    <td class="cen"><?= it.n ?></td>
+    <td class="cen"><?= it.cantidad ?></td>
+    <td>
+      <?!= it.descripcionHtml ?>
+      <? if (it.marca || it.codigo) { ?>
+        <div class="desc-marca">
+          <? if (it.marca) { ?>Marca: <?= it.marca ?><? } ?>
+          <? if (it.marca && it.codigo) { ?> &nbsp;·&nbsp; <? } ?>
+          <? if (it.codigo) { ?>Cód.: <?= it.codigo ?><? } ?>
+        </div>
+      <? } ?>
+    </td>
+    <td class="der"><?= it.punitarioTexto ?></td>
+    <td class="der"><?= it.descuentoTexto ?></td>
+    <td class="der"><?= it.totalTexto ?></td>
+  </tr>
+  <? } ?>
+</table>
+
+<table>
+  <tr>
+    <td></td>
+    <td style="width:300px;">
+      <table class="totales">
+        <tr>
+          <td class="et">Subtotal</td>
+          <td class="im"><?= d.moneda ?> <?= d.subtotalTexto ?></td>
+        </tr>
+        <tr>
+          <td class="et">IVA <?= d.ivaPctTexto ?></td>
+          <td class="im"><?= d.moneda ?> <?= d.ivaTexto ?></td>
+        </tr>
+        <tr class="total">
+          <td class="et" style="color:#FFFFFF;">TOTAL</td>
+          <td class="im"><?= d.moneda ?> <?= d.totalTexto ?></td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<div class="condiciones">
+  <h3>Condiciones comerciales</h3>
+  <table>
+    <tr>
+      <td class="et">Tiempo de entrega:</td>
+      <td><?= d.entrega ?></td>
+    </tr>
+    <tr>
+      <td class="et">Forma de pago:</td>
+      <td><?= d.pago ?></td>
+    </tr>
+    <tr>
+      <td class="et">Validez de la oferta:</td>
+      <td><?= d.validez ?> días a partir de la fecha de emisión</td>
+    </tr>
+    <? if (d.garantia) { ?>
+    <tr>
+      <td class="et">Garantía:</td>
+      <td><?= d.garantia ?></td>
+    </tr>
+    <? } ?>
+    <tr>
+      <td class="et">Precios:</td>
+      <td>Expresados en <?= d.moneda ?>. No incluyen IVA salvo donde se indica.</td>
+    </tr>
+    <? if (d.tieneObservaciones) { ?>
+    <tr>
+      <td class="et">Observaciones:</td>
+      <td><?!= d.observacionesHtml ?></td>
+    </tr>
+    <? } ?>
+  </table>
+</div>
+
+<div class="firma">
+  <div class="linea">
+    <div class="nombre"><?= d.representante ?></div>
+    <div class="cargo"><?= d.cargo ?> — <?= d.empresa ?></div>
+  </div>
+</div>
+
+<div class="pie">
+  <?= d.empresa ?> · <?= d.telefonos ?> · <?= d.email ?> · <?= d.web ?>
+</div>
