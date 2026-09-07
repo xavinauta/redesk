@@ -1,7 +1,8 @@
 <!--
   Diálogo de "Leer precios de proveedor".
 
-  Admite varios archivos en la misma tanda: se leen uno a uno, los resultados
+  Admite varios archivos en la misma tanda —PDF, fotos, xlsx, xls, ods, csv—
+  y también el enlace de una hoja de Google. Se leen uno a uno, los resultados
   se van acumulando y se revisan todos juntos antes de escribir nada en la
   hoja. Se puede volver a añadir archivos sin perder lo ya reconocido.
 
@@ -25,6 +26,31 @@
     padding: 18px;
     text-align: center;
     background: #fafbfc;
+  }
+  .caja label { display: block; margin-bottom: 6px; color: #5f6368; }
+  .caja input[type=text] {
+    font-family: inherit;
+    font-size: 13px;
+    width: 100%;
+    max-width: 460px;
+    padding: 7px 9px;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+  }
+
+  .o-bien {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 12px 0;
+    color: #80868b;
+    font-size: 12px;
+  }
+  .o-bien::before, .o-bien::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: #e8eaed;
   }
 
   button {
@@ -106,16 +132,32 @@
 
 <h2>Leer precios de proveedor</h2>
 <p class="ayuda">
-  Elige uno o varios PDF o fotos. Se reconocen la descripción y el precio de
-  cada línea; el resto lo escribes tú.
+  Se reconocen la descripción y el precio de cada línea; el resto lo escribes
+  tú.
 </p>
 
 <div id="paso-archivo">
   <div class="caja">
-    <input type="file" id="archivo" accept="image/*,application/pdf" multiple>
+    <input type="file" id="archivo" multiple
+           accept="image/*,application/pdf,.xlsx,.xlsm,.xls,.ods,.csv,.tsv">
     <p class="ayuda" style="margin:10px 0 0">
-      Puedes seleccionar varios a la vez. Cuanto más nítida y recortada esté
-      cada imagen, mejor sale.
+      PDF, fotos, xlsx, xls, ods o csv. Puedes elegir varios a la vez.
+      De un Excel se leen las celdas; de una foto o un PDF, con
+      reconocimiento de texto, así que cuanto más nítida y recortada esté la
+      imagen, mejor sale.
+    </p>
+  </div>
+
+  <div class="o-bien">
+    <span>o</span>
+  </div>
+
+  <div class="caja">
+    <label for="enlace">Enlace de una hoja de Google</label>
+    <input type="text" id="enlace"
+           placeholder="https://docs.google.com/spreadsheets/d/…">
+    <p class="ayuda" style="margin:8px 0 0">
+      Tienes que poder abrirla con esta misma cuenta.
     </p>
   </div>
   <div id="progreso"></div>
@@ -123,6 +165,7 @@
   <div class="pie">
     <span class="cuenta" id="acumulado"></span>
     <button class="secundario" id="volver" style="display:none">Ver lo reconocido</button>
+    <button class="secundario" id="leerEnlace" disabled>Leer la hoja</button>
     <button id="leer" disabled>Leer archivos</button>
   </div>
 </div>
@@ -171,6 +214,40 @@
   $('archivo').addEventListener('change', function () {
     $('leer').disabled = !this.files.length;
     estado('estado', '');
+  });
+
+  $('enlace').addEventListener('input', function () {
+    $('leerEnlace').disabled = !this.value.trim();
+    estado('estado', '');
+  });
+
+  $('leerEnlace').addEventListener('click', function () {
+    var url = $('enlace').value.trim();
+    if (!url) return;
+
+    $('leerEnlace').disabled = true;
+    estado('estado', 'Leyendo la hoja…');
+
+    google.script.run
+      .withSuccessHandler(function (resultado) {
+        var nuevos = resultado.items || [];
+        items = items.concat(nuevos);
+        acumulado();
+        $('enlace').value = '';
+        if (nuevos.length) {
+          estado('estado', '');
+          mostrar();
+        } else {
+          $('leerEnlace').disabled = false;
+          estado('estado',
+            'Esa hoja no dio líneas con descripción y precio.', 'error');
+        }
+      })
+      .withFailureHandler(function (err) {
+        $('leerEnlace').disabled = false;
+        estado('estado', err.message || String(err), 'error');
+      })
+      .reconocerHojaPorUrl(url);
   });
 
   $('leer').addEventListener('click', function () {
@@ -329,7 +406,9 @@
     $('paso-archivo').style.display = 'block';
     $('progreso').innerHTML = '';
     $('archivo').value = '';
+    $('enlace').value = '';
     $('leer').disabled = true;
+    $('leerEnlace').disabled = true;
     estado('estado', '');
     acumulado();
   });

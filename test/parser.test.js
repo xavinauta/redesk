@@ -186,6 +186,85 @@ prueba('extraerItems_ tolera un texto vacío', () => {
   igual(extraerItems_(null), []);
 });
 
+// ------------------------------------------- hojas de cálculo (xls, sheets)
+
+prueba('localizarCabecera_ encuentra las columnas por su encabezado', () => {
+  const cab = L.localizarCabecera_([
+    ['ZC MAYORISTAS', '', ''],
+    ['CODIGO', 'DESCRIPCIÓN', 'PRECIO'],
+    ['A1', 'SWITCH 24P', '92.30'],
+  ]);
+  igual(cab, { fila: 1, descripcion: 1, precio: 2 });
+});
+
+prueba('localizarCabecera_ prefiere la columna de precio más específica', () => {
+  // Con COSTO y PRECIO UNITARIO en la misma tabla, gana el unitario.
+  const cab = L.localizarCabecera_([
+    ['DETALLE', 'COSTO', 'PRECIO UNITARIO'],
+  ]);
+  assert.strictEqual(cab.precio, 2);
+  assert.strictEqual(cab.descripcion, 0);
+});
+
+prueba('localizarCabecera_ devuelve null si no reconoce la tabla', () => {
+  assert.strictEqual(L.localizarCabecera_([['a', 'b'], ['c', 'd']]), null);
+  assert.strictEqual(L.localizarCabecera_([]), null);
+});
+
+prueba('extraerDeTabla_ toma las columnas cuando hay encabezado', () => {
+  const items = L.extraerDeTabla_([
+    ['LISTA DE PRECIOS', '', ''],
+    ['CÓDIGO', 'DESCRIPCION', 'PRECIO UNITARIO'],
+    ['GWN7660', 'GRANDSTREAM AP WIFI 6', '105.84'],
+    ['U6LR', 'UBIQUITI U6-LR', '$ 178,50'],
+    ['', '', ''],
+    ['TOT', 'TOTAL', '284.34'],
+  ]);
+  igual(items.map((i) => [i.descripcion, i.precio, i.seguro]), [
+    ['GRANDSTREAM AP WIFI 6', 105.84, true],
+    ['UBIQUITI U6-LR', 178.5, true],
+  ]);
+});
+
+prueba('extraerDeTabla_ ignora las filas sin precio o sin descripción', () => {
+  const items = L.extraerDeTabla_([
+    ['PRODUCTO', 'PRECIO'],
+    ['MONITOR LG 24', '145.00'],
+    ['SIN PRECIO', ''],
+    ['', '99.00'],
+    ['X', '50.00'],
+  ]);
+  igual(items.map((i) => i.descripcion), ['MONITOR LG 24'],
+    'una descripción de una letra no es un producto');
+});
+
+prueba('extraerDeTabla_ recurre a la lectura por línea sin encabezado', () => {
+  const items = L.extraerDeTabla_([
+    ['SWITCH TP-LINK 24P', '', '92.30'],
+    ['CAMARA HIKVISION 4MPX', '', '62.40'],
+  ]);
+  assert.strictEqual(items.length, 2);
+  assert.strictEqual(items[0].precio, 92.3);
+  assert.strictEqual(items[0].seguro, false,
+    'sin encabezado, cuál es el precio es una suposición');
+});
+
+prueba('idDeUrl_ saca el identificador de un enlace de hoja', () => {
+  const id = '187vb8AR79Ibm2lbKkbSz1zVf0e2s-l-PPChOdENfrMU';
+  assert.strictEqual(
+    L.idDeUrl_('https://docs.google.com/spreadsheets/d/' + id +
+      '/edit?usp=sharing'), id);
+  assert.strictEqual(L.idDeUrl_(id), id, 'también vale el identificador solo');
+  assert.strictEqual(L.idDeUrl_(''), '');
+  assert.strictEqual(L.idDeUrl_('https://redesk.net'), '');
+});
+
+prueba('normalizar_ compara encabezados escritos de cualquier manera', () => {
+  assert.strictEqual(L.normalizar_('  Descripción '), 'DESCRIPCION');
+  assert.strictEqual(L.normalizar_('Precio  Unitario'), 'PRECIO UNITARIO');
+  assert.strictEqual(L.normalizar_(null), '');
+});
+
 // --------------------------------------------------- líneas repetidas
 
 prueba('claveItem_ iguala las líneas que son la misma', () => {
@@ -259,6 +338,37 @@ prueba('el diálogo admite varios archivos y los lee en serie', () => {
   // En serie: cada OCR es una subida a Drive y lanzarlos a la vez agota cuota.
   assert.ok(dialogo.includes('leerUno(archivos, i + 1)'),
     'los archivos se encadenan uno tras otro');
+});
+
+prueba('el diálogo acepta también hojas de cálculo y enlaces', () => {
+  const codigo = fs.readFileSync(CODIGO, 'utf8');
+  const dialogo = fs.readFileSync(
+    path.join(__dirname, '..', 'simple', 'dialogo.html'), 'utf8');
+
+  ['.xlsx', '.xls', '.ods', '.csv'].forEach((ext) => {
+    assert.ok(dialogo.includes(ext), 'el selector debe aceptar ' + ext);
+  });
+  assert.ok(dialogo.includes('.reconocerHojaPorUrl('),
+    'el diálogo debe poder leer una hoja por su enlace');
+  assert.ok(/function\s+reconocerHojaPorUrl\s*\(/.test(codigo),
+    'Codigo.gs debe definir reconocerHojaPorUrl');
+});
+
+prueba('ya no hace falta el servicio avanzado de Drive', () => {
+  // Las llamadas van por la API REST: un paso menos de instalación y un
+  // error menos que se pueda dar.
+  const codigo = fs.readFileSync(CODIGO, 'utf8');
+  const manifiesto = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'simple', 'appsscript.json'), 'utf8'));
+
+  assert.ok(!/\bDrive\.Files\./.test(codigo),
+    'no debe quedar ninguna llamada al servicio avanzado');
+  assert.strictEqual(manifiesto.dependencies, undefined,
+    'el manifiesto no debe declarar servicios avanzados');
+  assert.ok(
+    manifiesto.oauthScopes.includes(
+      'https://www.googleapis.com/auth/script.external_request'),
+    'hace falta el permiso de peticiones externas para llamar a la API');
 });
 
 // ------------------------------------------------------------------ fin

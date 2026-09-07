@@ -3,9 +3,10 @@
  * =================================================
  *
  * 1. REDESK ▸ Leer precios de proveedor…
- *    Abre un diálogo, eliges un PDF o una foto del proveedor, se le pasa el
- *    OCR y se proponen los pares DESCRIPCIÓN / PRECIO encontrados. Revisas,
- *    marcas los que quieres y se pegan a partir de la celda seleccionada.
+ *    Abre un diálogo donde eliges uno o varios archivos del proveedor —PDF,
+ *    fotos, xlsx, xls, ods o csv— o pegas el enlace de una hoja de Google.
+ *    Se proponen los pares DESCRIPCIÓN / PRECIO encontrados; revisas, marcas
+ *    los que quieres y se añaden desde la celda seleccionada.
  *
  * 2. REDESK ▸ Generar PDF para enviar
  *    Oculta las columnas COSTO y UTILIDAD, exporta la hoja a PDF tal como
@@ -18,8 +19,10 @@
  *   3. Crea un archivo HTML llamado exactamente "dialogo" y pega dialogo.html.
  *   4. Configuración del proyecto ▸ mostrar appsscript.json, y pega el
  *      manifiesto de este mismo repositorio.
- *   5. Servicios ▸ + ▸ Drive API (v2 o v3, la que te ofrezca).
- *   6. Recarga la hoja: aparece el menú REDESK.
+ *   5. Recarga la hoja: aparece el menú REDESK.
+ *
+ * No hay que activar ningún servicio avanzado: las llamadas a Drive van por
+ * su API REST, que ya cubre el manifiesto.
  *
  * Lo único que hay que revisar está en AJUSTES, aquí debajo.
  */
@@ -41,6 +44,9 @@ const AJUSTES = {
 
   /** Idioma que se le indica al OCR. */
   IDIOMA_OCR: 'es',
+
+  /** Tope de filas que se leen de una hoja de proveedor. */
+  FILAS_MAX_HOJA: 2000,
 };
 
 // ===========================================================================
@@ -72,23 +78,41 @@ function ejecutar_(fn) {
 }
 
 // ===========================================================================
-// SCRIPT 1 — Leer precios de proveedor con OCR
+// SCRIPT 1 — Leer cotizaciones de proveedor
+// ===========================================================================
+//
+// Admite dos caminos según lo que llegue:
+//   · PDF o imagen  → se pasa por el OCR de Drive.
+//   · Hoja de cálculo (xlsx, xls, ods, csv) o enlace a una hoja de Google
+//     → se leen las celdas, que es exacto y no necesita reconocimiento.
+//
+// Las llamadas a Drive van por su API REST con UrlFetchApp, no por el
+// servicio avanzado del editor: así no hay que activarlo, y la petición es
+// la misma en cualquier cuenta, ofrezca el editor la v2 o la v3.
 // ===========================================================================
 
-/** Abre el diálogo donde se elige el archivo del proveedor. */
+/** Tipos de archivo que se leen como hoja de cálculo, sin OCR. */
+const TIPOS_HOJA = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'text/csv',
+  'text/tab-separated-values',
+];
+
+/** Abre el diálogo donde se eligen los archivos del proveedor. */
 function abrirDialogoOcr() {
   const html = HtmlService.createHtmlOutputFromFile('dialogo')
-    .setWidth(680)
-    .setHeight(560);
+    .setWidth(700)
+    .setHeight(620);
   SpreadsheetApp.getUi().showModalDialog(html, 'Leer precios de proveedor');
 }
 
 /**
- * Recibe un archivo del diálogo, le pasa el OCR y devuelve lo que encuentre.
+ * Recibe un archivo del diálogo y devuelve los productos que encuentre.
  *
  * No falla cuando un archivo no da resultados: con varios archivos en la
- * misma tanda, uno ilegible no debe tumbar a los demás. El diálogo informa
- * archivo por archivo.
+ * misma tanda, uno ilegible no debe tumbar a los demás.
  *
  * @param {string} base64 contenido del archivo
  * @param {string} nombre nombre original
@@ -100,84 +124,228 @@ function reconocerArchivo(base64, nombre, tipo) {
   const etiqueta = nombre || 'archivo';
 
   const contenido = Utilities.newBlob(
-    Utilities.base64Decode(base64), tipo || 'application/pdf', etiqueta);
+    Utilities.base64Decode(base64),
+    tipo || 'application/octet-stream',
+    etiqueta);
 
-  const items = extraerItems_(textoPorOcr_(contenido, etiqueta));
+  const items = esHojaDeCalculo_(tipo, etiqueta)
+    ? itemsDeHojaSubida_(contenido, etiqueta)
+    : extraerItems_(textoPorOcr_(contenido, etiqueta));
 
-  // La clave se calcula aquí para que el diálogo pueda marcar las repetidas
-  // sin duplicar esa regla en el navegador.
+  return { archivo: etiqueta, items: etiquetar_(items, etiqueta) };
+}
+
+/**
+ * Lee una hoja de Google a partir de su enlace. La llama dialogo.html.
+ *
+ * @param {string} url enlace o identificador de la hoja
+ * @return {{archivo: string, items: !Array<!Object>}}
+ */
+function reconocerHojaPorUrl(url) {
+  const id = idDeUrl_(url);
+  if (!id) {
+    throw new Error(
+      'Eso no parece el enlace de una hoja de Google. Copia la dirección ' +
+      'completa desde la barra del navegador.');
+  }
+
+  let libro;
+  try {
+    libro = SpreadsheetApp.openById(id);
+  } catch (err) {
+    throw new Error(
+      'No pude abrir esa hoja. Comprueba que el enlace es correcto y que ' +
+      'tienes permiso para verla con esta misma cuenta.');
+  }
+
+  const nombre = libro.getName();
+  return {
+    archivo: nombre,
+    items: etiquetar_(itemsDeLibro_(libro, nombre), nombre),
+  };
+}
+
+/**
+ * ¿Este archivo se lee como hoja de cálculo en vez de con OCR?
+ * @param {string} tipo
+ * @param {string} nombre
+ * @return {boolean}
+ */
+function esHojaDeCalculo_(tipo, nombre) {
+  if (tipo && TIPOS_HOJA.indexOf(tipo) !== -1) return true;
+  return /\.(xlsx|xlsm|xls|ods|csv|tsv)$/i.test(String(nombre || ''));
+}
+
+/**
+ * Completa cada producto con su archivo de origen y su clave de repetido.
+ *
+ * La clave se calcula aquí para que el diálogo pueda marcar las repetidas
+ * sin duplicar esa regla en el navegador.
+ *
+ * @param {!Array<!Object>} items
+ * @param {string} etiqueta
+ * @return {!Array<!Object>}
+ */
+function etiquetar_(items, etiqueta) {
   items.forEach(function (item) {
-    item.archivo = etiqueta;
+    if (!item.archivo) item.archivo = etiqueta;
     item.clave = claveItem_(item);
   });
+  return items;
+}
 
-  return { archivo: etiqueta, items: items };
+/**
+ * Sube una hoja de cálculo, la lee y borra la copia temporal.
+ * @param {!GoogleAppsScript.Base.Blob} contenido
+ * @param {string} nombre
+ * @return {!Array<!Object>}
+ */
+function itemsDeHojaSubida_(contenido, nombre) {
+  const id = subirConvertido_(contenido, nombre, MimeType.GOOGLE_SHEETS, {});
+  try {
+    return itemsDeLibro_(SpreadsheetApp.openById(id), nombre);
+  } finally {
+    borrarTemporal_(id);
+  }
+}
+
+/**
+ * Recorre todas las pestañas de un libro buscando productos.
+ * @param {!GoogleAppsScript.Spreadsheet.Spreadsheet} libro
+ * @param {string} nombreBase
+ * @return {!Array<!Object>}
+ */
+function itemsDeLibro_(libro, nombreBase) {
+  const hojas = libro.getSheets();
+  const items = [];
+
+  hojas.forEach(function (hoja) {
+    const filas = Math.min(hoja.getLastRow(), AJUSTES.FILAS_MAX_HOJA);
+    const columnas = hoja.getLastColumn();
+    if (filas < 1 || columnas < 1) return;
+
+    const datos = hoja.getRange(1, 1, filas, columnas).getDisplayValues();
+    const etiqueta = hojas.length > 1
+      ? nombreBase + ' · ' + hoja.getName()
+      : nombreBase;
+
+    extraerDeTabla_(datos).forEach(function (item) {
+      item.archivo = etiqueta;
+      items.push(item);
+    });
+  });
+  return items;
 }
 
 /**
  * Pasa un PDF o una imagen por el OCR de Drive y devuelve su texto.
  *
- * Drive hace el OCR al subir el archivo con el parámetro ocr, y entrega el
- * resultado como Documento de Google. El documento intermedio se descarta.
+ * Drive reconoce el texto al subir el archivo pidiendo que se convierta en
+ * Documento de Google. El documento intermedio se descarta.
  *
  * @param {!GoogleAppsScript.Base.Blob} contenido
  * @param {string} nombre
  * @return {string}
  */
 function textoPorOcr_(contenido, nombre) {
-  if (typeof Drive === 'undefined') {
-    throw new Error(
-      'Falta activar el servicio de Drive: en el editor de Apps Script, ' +
-      'Servicios ▸ + ▸ Drive API, dejando el identificador en "Drive".');
+  const id = subirConvertido_(
+    contenido, 'OCR ' + nombre, MimeType.GOOGLE_DOCS,
+    { ocrLanguage: AJUSTES.IDIOMA_OCR });
+  try {
+    return exportarComoTexto_(id);
+  } finally {
+    borrarTemporal_(id);
   }
+}
 
-  const carpeta = carpetaDeTrabajo_();
-  const errores = [];
+/**
+ * Sube un contenido a Drive convirtiéndolo al formato de Google indicado.
+ *
+ * @param {!GoogleAppsScript.Base.Blob} contenido
+ * @param {string} nombre
+ * @param {string} mimeDestino formato de Google al que convertir
+ * @param {!Object} parametros parámetros extra de la API, como ocrLanguage
+ * @return {string} ID del archivo creado
+ */
+function subirConvertido_(contenido, nombre, mimeDestino, parametros) {
+  const metadatos = {
+    name: nombre,
+    mimeType: mimeDestino,
+    parents: [carpetaDeTrabajo_().getId()],
+  };
 
-  // El editor ofrece la v2 o la v3 según la cuenta, y cada una nombra
-  // distinto los campos. En la v2 el mimeType del recurso describe el ORIGEN
-  // —poner ahí el de Documento hace que rechace el OCR—; en la v3 describe
-  // el destino y es lo que pide la conversión.
-  const intentos = [
-    function () {
-      return Drive.Files.insert(
-        {
-          title: 'OCR ' + nombre,
-          mimeType: contenido.getContentType(),
-          parents: [{ id: carpeta.getId() }],
-        },
-        contenido,
-        { ocr: true, ocrLanguage: AJUSTES.IDIOMA_OCR, supportsAllDrives: true });
-    },
-    function () {
-      return Drive.Files.create(
-        {
-          name: 'OCR ' + nombre,
-          mimeType: MimeType.GOOGLE_DOCS,
-          parents: [carpeta.getId()],
-        },
-        contenido,
-        { ocrLanguage: AJUSTES.IDIOMA_OCR, supportsAllDrives: true });
-    },
-  ];
+  // Subida multiparte: primero los metadatos como JSON y después los bytes
+  // del archivo, separados por el delimitador.
+  const limite = 'redesk' + Date.now();
+  const cabecera =
+    '--' + limite + '\r\n' +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadatos) + '\r\n' +
+    '--' + limite + '\r\n' +
+    'Content-Type: ' +
+    (contenido.getContentType() || 'application/octet-stream') + '\r\n\r\n';
 
-  for (let i = 0; i < intentos.length; i++) {
-    let idDoc = null;
-    try {
-      idDoc = intentos[i]().id;
-      return DocumentApp.openById(idDoc).getBody().getText();
-    } catch (err) {
-      errores.push((i === 0 ? 'v2' : 'v3') + ': ' +
-        (err && err.message ? err.message : err));
-    } finally {
-      if (idDoc) {
-        try {
-          DriveApp.getFileById(idDoc).setTrashed(true);
-        } catch (err2) { /* si no se puede borrar, queda en la carpeta */ }
-      }
-    }
+  const cuerpo = Utilities.newBlob(cabecera).getBytes()
+    .concat(contenido.getBytes())
+    .concat(Utilities.newBlob('\r\n--' + limite + '--').getBytes());
+
+  const consulta = Object.keys(parametros || {})
+    .map(function (clave) {
+      return clave + '=' + encodeURIComponent(parametros[clave]);
+    })
+    .concat(['uploadType=multipart', 'supportsAllDrives=true'])
+    .join('&');
+
+  const respuesta = UrlFetchApp.fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?' + consulta,
+    {
+      method: 'post',
+      contentType: 'multipart/related; boundary=' + limite,
+      payload: cuerpo,
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true,
+    });
+
+  if (respuesta.getResponseCode() >= 300) {
+    throw new Error('Drive no aceptó el archivo (código ' +
+      respuesta.getResponseCode() + '): ' +
+      respuesta.getContentText().slice(0, 200));
   }
-  throw new Error('Drive no pudo leer el archivo. ' + errores.join(' | '));
+  return JSON.parse(respuesta.getContentText()).id;
+}
+
+/**
+ * Descarga como texto plano un documento de Drive.
+ * @param {string} id
+ * @return {string}
+ */
+function exportarComoTexto_(id) {
+  const respuesta = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + id +
+    '/export?mimeType=text%2Fplain',
+    {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true,
+    });
+
+  if (respuesta.getResponseCode() >= 300) {
+    throw new Error('No pude leer el texto reconocido (código ' +
+      respuesta.getResponseCode() + ').');
+  }
+  return respuesta.getContentText();
+}
+
+/**
+ * Manda a la papelera un archivo temporal, sin romper el flujo si no puede.
+ * @param {?string} id
+ */
+function borrarTemporal_(id) {
+  if (!id) return;
+  try {
+    DriveApp.getFileById(id).setTrashed(true);
+  } catch (err) {
+    // Si no se puede borrar, se queda en _ocr_temp y no estorba.
+  }
 }
 
 /**
@@ -263,7 +431,7 @@ function asegurarEspacio_(hoja, inicio, columna, cuantas) {
 }
 
 /**
- * Carpeta donde se dejan los documentos intermedios del OCR, junto a la hoja.
+ * Carpeta donde se dejan los archivos intermedios, junto a la hoja.
  * @return {!GoogleAppsScript.Drive.Folder}
  */
 function carpetaDeTrabajo_() {
@@ -379,8 +547,7 @@ function lineaAItem_(linea) {
 
   // Una línea sin letras suficientes es un total, un número de página o
   // ruido del reconocimiento, no un producto.
-  const letras = descripcion.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/g, '').length;
-  if (letras < 3) return null;
+  if (letras_(descripcion) < 3) return null;
 
   return { descripcion: descripcion, precio: importe, seguro: precio.seguro };
 }
@@ -433,6 +600,160 @@ function extraerItems_(texto) {
     if (item && pareceProducto_(item)) items.push(item);
   });
   return items;
+}
+
+/**
+ * Pasa un texto a mayúsculas sin acentos ni espacios sobrantes, para poder
+ * comparar encabezados escritos de cualquier manera.
+ * @param {*} texto
+ * @return {string}
+ */
+function normalizar_(texto) {
+  return String(texto == null ? '' : texto)
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toUpperCase()
+    .replace(/[ÁÀÄÂ]/g, 'A').replace(/[ÉÈËÊ]/g, 'E')
+    .replace(/[ÍÌÏÎ]/g, 'I').replace(/[ÓÒÖÔ]/g, 'O')
+    .replace(/[ÚÙÜÛ]/g, 'U').replace(/Ñ/g, 'N');
+}
+
+/** Encabezados que identifican la columna de la descripción. */
+const CABECERAS_DESCRIPCION = [
+  'DESCRIPCION', 'DETALLE', 'PRODUCTO', 'ARTICULO', 'CONCEPTO',
+  'ITEM', 'EQUIPO', 'MODELO', 'NOMBRE',
+];
+
+/**
+ * Encabezados que identifican la columna del precio, de más específico a
+ * menos: si una tabla trae varias, gana la más concreta.
+ */
+const CABECERAS_PRECIO = [
+  'PRECIO UNITARIO', 'P. UNITARIO', 'P.UNITARIO', 'VALOR UNITARIO',
+  'UNITARIO', 'PRECIO VENTA', 'PRECIO LISTA', 'PRECIO', 'PVP',
+  'COSTO', 'VALOR',
+];
+
+/**
+ * Posición de un encabezado dentro de una lista de candidatos.
+ * @param {string} valor encabezado ya normalizado
+ * @param {!Array<string>} candidatos
+ * @return {number} el índice, o -1 si no coincide con ninguno
+ */
+function rangoCabecera_(valor, candidatos) {
+  for (let i = 0; i < candidatos.length; i++) {
+    if (valor.indexOf(candidatos[i]) !== -1) return i;
+  }
+  return -1;
+}
+
+/**
+ * Busca en las primeras filas la que hace de encabezado, y con ella las
+ * columnas de descripción y de precio.
+ *
+ * @param {!Array<!Array<*>>} filas
+ * @return {?{fila: number, descripcion: number, precio: number}}
+ */
+function localizarCabecera_(filas) {
+  const limite = Math.min(filas.length, 15);
+
+  for (let f = 0; f < limite; f++) {
+    let descripcion = -1;
+    let precio = -1;
+    let mejor = Infinity;
+
+    for (let c = 0; c < filas[f].length; c++) {
+      const valor = normalizar_(filas[f][c]);
+      if (!valor) continue;
+
+      if (descripcion === -1 &&
+          rangoCabecera_(valor, CABECERAS_DESCRIPCION) !== -1) {
+        descripcion = c;
+      }
+      const rango = rangoCabecera_(valor, CABECERAS_PRECIO);
+      if (rango !== -1 && rango < mejor) {
+        mejor = rango;
+        precio = c;
+      }
+    }
+
+    if (descripcion !== -1 && precio !== -1 && descripcion !== precio) {
+      return { fila: f, descripcion: descripcion, precio: precio };
+    }
+  }
+  return null;
+}
+
+/**
+ * Extrae los productos de una tabla ya leída de una hoja de cálculo.
+ *
+ * Con encabezados reconocibles se toman las columnas directamente, que es
+ * exacto. Sin ellos se junta cada fila en una línea y se aplica la misma
+ * lectura que a un texto reconocido, marcando el resultado como inseguro
+ * para que se revise.
+ *
+ * @param {!Array<!Array<*>>} filas valores de las celdas
+ * @return {!Array<{descripcion: string, precio: number, seguro: boolean}>}
+ */
+function extraerDeTabla_(filas) {
+  const items = [];
+  if (!filas || !filas.length) return items;
+
+  const cabecera = localizarCabecera_(filas);
+
+  if (cabecera) {
+    for (let f = cabecera.fila + 1; f < filas.length; f++) {
+      const descripcion = normalizarTexto_(filas[f][cabecera.descripcion]);
+      const precio = aNumero_(filas[f][cabecera.precio]);
+      if (!descripcion || precio === null || !(precio > 0)) continue;
+      if (letras_(descripcion) < 3) continue;
+
+      const item = { descripcion: descripcion, precio: precio, seguro: true };
+      if (pareceProducto_(item)) items.push(item);
+    }
+    return items;
+  }
+
+  filas.forEach(function (fila) {
+    const item = lineaAItem_(fila.join(' '));
+    if (item && pareceProducto_(item)) {
+      // Sin encabezado, cuál es el precio es una suposición.
+      item.seguro = false;
+      items.push(item);
+    }
+  });
+  return items;
+}
+
+/**
+ * Limpia el contenido de una celda dejándolo en una sola línea.
+ * @param {*} valor
+ * @return {string}
+ */
+function normalizarTexto_(valor) {
+  return String(valor == null ? '' : valor).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Cuántas letras tiene un texto, sin contar números ni signos.
+ * @param {string} texto
+ * @return {number}
+ */
+function letras_(texto) {
+  return String(texto).replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/g, '').length;
+}
+
+/**
+ * Extrae el identificador de una hoja a partir de su enlace.
+ * @param {string} url
+ * @return {string} el identificador, o cadena vacía si no se reconoce
+ */
+function idDeUrl_(url) {
+  const texto = String(url == null ? '' : url).trim();
+  if (!texto) return '';
+  const enlace = texto.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+  if (enlace) return enlace[1];
+  return /^[a-zA-Z0-9_-]{20,}$/.test(texto) ? texto : '';
 }
 
 /**
@@ -575,21 +896,6 @@ function buscarColumnas_(hoja, nombres) {
     }
   }
   return encontradas;
-}
-
-/**
- * Pasa un texto a mayúsculas sin acentos ni espacios sobrantes, para poder
- * comparar encabezados escritos de cualquier manera.
- * @param {*} texto
- * @return {string}
- */
-function normalizar_(texto) {
-  return String(texto == null ? '' : texto)
-    .trim()
-    .toUpperCase()
-    .replace(/[ÁÀÄÂ]/g, 'A').replace(/[ÉÈËÊ]/g, 'E')
-    .replace(/[ÍÌÏÎ]/g, 'I').replace(/[ÓÒÖÔ]/g, 'O')
-    .replace(/[ÚÙÜÛ]/g, 'U').replace(/Ñ/g, 'N');
 }
 
 /**
