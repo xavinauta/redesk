@@ -98,6 +98,30 @@ prueba('el símbolo de moneda manda sobre todo lo demás', () => {
   assert.strictEqual(item.seguro, true);
 });
 
+prueba('reconoce cantidad, precio y total de una proforma', () => {
+  // Fila real de una proforma de ZC Mayoristas. Sin esta regla se tomaría
+  // el total por precio, y la descripción arrastraría la cantidad.
+  const item = lineaAItem_(
+    'GRANDSTREAM GWN7660ELR AP 2X2  DOBLE BANDA WIFI 6   1.00   100.80   100.80');
+  assert.strictEqual(item.precio, 100.80);
+  assert.strictEqual(
+    item.descripcion, 'GRANDSTREAM GWN7660ELR AP 2X2 DOBLE BANDA WIFI 6');
+  assert.strictEqual(item.seguro, true);
+});
+
+prueba('el patrón cantidad por precio vale con cantidades mayores que uno', () => {
+  const item = lineaAItem_('SWITCH POE 8 PUERTOS   2.00   115.20   230.40');
+  assert.strictEqual(item.precio, 115.2);
+  assert.strictEqual(item.descripcion, 'SWITCH POE 8 PUERTOS');
+});
+
+prueba('el patrón no se aplica cuando los números no cuadran', () => {
+  // 2 x 50.00 no da 130.00: aquí no hay cantidad-precio-total.
+  const item = lineaAItem_('CABLE HDMI 2 50.00 130.00');
+  assert.strictEqual(item.precio, 130,
+    'sin el patrón, manda el último con decimales');
+});
+
 prueba('separa por el último importe cuando hay costo y precio', () => {
   const item = lineaAItem_('DISCO SSD 1TB NVME KINGSTON  78.50  95.20');
   assert.strictEqual(item.precio, 95.2);
@@ -184,6 +208,25 @@ prueba('extraerItems_ procesa una lista completa y descarta el ruido', () => {
 prueba('extraerItems_ tolera un texto vacío', () => {
   igual(extraerItems_(''), []);
   igual(extraerItems_(null), []);
+});
+
+prueba('extraerDeTabla_ resuelve la tabla de una proforma de proveedor', () => {
+  // Tal como llega la tabla del PDF de ZC Mayoristas una vez convertida.
+  const items = L.extraerDeTabla_([
+    ['Código', 'Dscription', 'Detalle', 'Cantidad', 'Precio', 'Total'],
+    ['GRA5163', '', 'GRANDSTREAM GWN7660ELR AP 2X2 DOBLE BANDA WIFI 6',
+      '1.00', '100.80', '100.80'],
+    ['GRA5169', '', 'GRANDSTREAM GWN7801P SWITCH 8 PUERTOS POE CAPA DOS',
+      '1.00', '115.20', '115.20'],
+    ['SVL2786', '', 'SERVICIO LOGÍSTICO DE ENVÍO DE MERCADERÍA',
+      '1.00', '6.00', '6.00'],
+  ]);
+
+  igual(items.map((i) => [i.descripcion, i.precio]), [
+    ['GRANDSTREAM GWN7660ELR AP 2X2 DOBLE BANDA WIFI 6', 100.8],
+    ['GRANDSTREAM GWN7801P SWITCH 8 PUERTOS POE CAPA DOS', 115.2],
+    ['SERVICIO LOGÍSTICO DE ENVÍO DE MERCADERÍA', 6],
+  ], 'con la tabla se toma la columna Precio, no la de Total');
 });
 
 // ------------------------------------------- hojas de cálculo (xls, sheets)
@@ -299,6 +342,54 @@ prueba('hayContenido_ detecta si el hueco está ocupado', () => {
     'un precio suelto también ocupa');
   assert.strictEqual(hay([[null, undefined]]), false);
   assert.strictEqual(hay([]), false);
+});
+
+// ------------------------------------------- líneas vacías en el PDF
+
+/** Plantilla como la del formato base: filas de ítem de sobra al final. */
+const PLANTILLA = [
+  ['PROFORMA', '', '', '', ''],
+  ['Nombre:', 'IMPORTADORA TOMEBAMBA', '', '', ''],
+  ['CANTIDAD', 'DESCRIPCION', 'COSTO', 'UTILIDAD', 'PRECIO'],
+  ['1', 'SWITCH TP-LINK 24P', '80.00', '0.15', '92.00'],
+  ['2', 'CAMARA HIKVISION', '55.00', '0.15', '63.25'],
+  ['', '', '', '', ''],
+  ['', '', '', '', ''],
+  ['', '', '', '', ''],
+  ['', '', '', 'SUBTOTAL:', '218.50'],
+  ['', '', '', 'IVA:', '32.78'],
+  ['', '', '', 'TOTAL:', '251.28'],
+];
+
+prueba('filasSinCantidad_ señala las líneas de ítem vacías', () => {
+  igual(L.filasSinCantidad_(PLANTILLA, 2, 0), [5, 6, 7],
+    'las tres filas de sobra del formato base');
+});
+
+prueba('filasSinCantidad_ no toca las filas de totales', () => {
+  // Los totales también tienen la cantidad vacía, pero tienen que salir.
+  const vacias = L.filasSinCantidad_(PLANTILLA, 2, 0);
+  [8, 9, 10].forEach((f) => {
+    assert.ok(vacias.indexOf(f) === -1,
+      'la fila ' + f + ' es un total y debe imprimirse');
+  });
+});
+
+prueba('filasSinCantidad_ devuelve vacío si no sobra ninguna línea', () => {
+  igual(L.filasSinCantidad_([
+    ['CANTIDAD', 'DESCRIPCION'],
+    ['1', 'MONITOR'],
+    ['', 'TOTAL:'],
+  ], 0, 0), []);
+});
+
+prueba('esFinDeItems_ reconoce dónde acaba la tabla', () => {
+  assert.strictEqual(L.esFinDeItems_(['', '', 'SUBTOTAL:', '218.50']), true);
+  assert.strictEqual(L.esFinDeItems_(['', '', 'IVA:', '32.78']), true);
+  assert.strictEqual(L.esFinDeItems_(['1', 'MONITOR LG', '145.00']), false);
+  assert.strictEqual(L.esFinDeItems_(['', '', '']), false);
+  assert.strictEqual(L.esFinDeItems_(['1', 'TOTALPLAY ROUTER', '45.90']), false,
+    'un producto que empieza por TOTAL no cierra la tabla');
 });
 
 // -------------------------------------------------- diálogo y servidor

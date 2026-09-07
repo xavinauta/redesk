@@ -7,7 +7,7 @@ nada que no le pidas.
 | Comando | Qué hace |
 |---|---|
 | `REDESK ▸ Leer precios de proveedor…` | Eliges **uno o varios** archivos —PDF, fotos, xlsx, xls, ods, csv— o pegas el **enlace de una hoja de Google**. Se proponen los pares **descripción / precio**; revisas todo junto, marcas, y se **añaden** desde la celda seleccionada. |
-| `REDESK ▸ Generar PDF para enviar` | Oculta las columnas **COSTO** y **UTILIDAD**, exporta la hoja a PDF y las vuelve a mostrar. |
+| `REDESK ▸ Generar PDF para enviar` | Oculta las columnas **COSTO** y **UTILIDAD** y las **líneas de ítem sin cantidad**, exporta la hoja a PDF y lo restaura todo. |
 
 ## Por qué el PDF se genera así
 
@@ -17,8 +17,18 @@ formatos porque es tu hoja impresa, no una reconstrucción. Es lo que evita
 los problemas de convertir HTML: ningún conversor de HTML de Google incrusta
 imágenes por su cuenta.
 
-Las columnas se ocultan sólo mientras dura la exportación, y se restauran
-aunque la exportación falle.
+Las columnas y las filas se ocultan sólo mientras dura la exportación, y se
+restauran aunque la exportación falle.
+
+### Las líneas de sobra no salen
+
+El formato base trae varias líneas de ítem para irlas llenando. Las que
+tengan la **cantidad vacía** no se imprimen, y su espacio se cierra.
+
+La tabla de ítems se da por terminada en la primera fila que contenga
+`SUBTOTAL`, `TOTAL`, `IVA` o `DESCUENTO`: esas también tienen la cantidad
+vacía, pero son los totales y sí tienen que salir. Un producto que empiece
+por una de esas palabras —`TOTALPLAY ROUTER`— no cierra la tabla.
 
 ## Qué formatos lee, y cómo
 
@@ -26,7 +36,7 @@ aunque la exportación falle.
 |---|---|
 | xlsx, xls, ods, csv | Se suben a Drive convertidos a hoja y **se leen las celdas**. Exacto, sin reconocimiento de por medio. |
 | Enlace a una hoja de Google | Se abre directamente. Necesitas poder verla con esta misma cuenta. |
-| PDF, fotos | **Reconocimiento de texto** de Drive, y después se interpreta línea a línea. |
+| PDF, fotos | **Reconocimiento de texto** de Drive. Si el documento trae tablas se leen como tablas; sólo si no, se interpreta línea a línea. |
 
 De una hoja de cálculo se buscan los encabezados —`DESCRIPCIÓN`, `DETALLE`,
 `PRODUCTO`… y `PRECIO`, `PRECIO UNITARIO`, `PVP`, `COSTO`…— sin distinguir
@@ -91,6 +101,7 @@ Todo lo configurable está en la constante `AJUSTES`, al principio de
 | Clave | Para qué |
 |---|---|
 | `COLUMNAS_OCULTAS` | Encabezados que no salen en el PDF. Vienen `COSTO` y `UTILIDAD`. Se buscan por texto, sin distinguir mayúsculas ni acentos, en cualquier columna. |
+| `COLUMNA_CANTIDAD` | Encabezado de la columna de cantidad. Las líneas que la tengan vacía no salen en el PDF. |
 | `FILAS_A_REVISAR` | Cuántas filas se miran buscando esos encabezados y el nombre del cliente. |
 | `CARPETA_PDF` | Carpeta de Drive donde se guardan los PDF. Se crea junto a la hoja. |
 | `IDIOMA_OCR` | Idioma que se le indica al reconocimiento. |
@@ -98,13 +109,25 @@ Todo lo configurable está en la constante `AJUSTES`, al principio de
 
 ## Cómo elige el precio de cada línea
 
-Una línea de una lista de precios suele traer varios números: `AP 2X2 DOBLE
-BANDA WIFI 6   105.84` tiene tres. El criterio, por orden:
+Una línea de una proforma trae varios números. En esta, seis:
 
-1. El número con símbolo de moneda (`$`, `USD`).
-2. Si no hay, el último con dos decimales.
-3. Si tampoco, el último número suelto — y la línea llega **desmarcada** en
-   el diálogo, porque ahí es donde falla el reconocimiento.
+```
+GRANDSTREAM GWN7660ELR AP 2X2 DOBLE BANDA WIFI 6   1.00   100.80   100.80
+```
+
+El criterio, por orden:
+
+1. **El patrón `cantidad precio total`**, cuando cantidad × precio da el
+   total. Es como imprimen las proformas de proveedor; sin esta regla se
+   tomaría el **total** por precio y la descripción arrastraría la cantidad.
+2. El número con símbolo de moneda (`$`, `USD`).
+3. El último con dos decimales.
+4. El último número suelto — y la línea llega **desmarcada** en el diálogo,
+   porque ahí es donde falla el reconocimiento.
+
+Antes de llegar a esto, si el PDF trae una **tabla** de verdad se lee como
+tabla y se toma la columna de precio directamente, que es exacto. Adivinar
+dentro de una línea es el último recurso, no el primero.
 
 Se descartan las líneas que empiezan por `TOTAL`, `SUBTOTAL`, `IVA`,
 `PÁGINA`, `LISTA DE PRECIOS` y similares, y los años sueltos de un título.
@@ -124,7 +147,9 @@ que corre en la hoja, sin una copia paralela que pueda quedarse atrás.
 Cubren los dos formatos decimales (`1.234,56` y `1,234.56`), la elección del
 precio entre varios números, el descarte del ruido, la localización de las
 columnas en una hoja de cálculo, la lectura de un enlace, la detección de
-líneas repetidas y dónde continuar la lista al añadir. Además revisan que el
+líneas repetidas, qué líneas se omiten al generar el PDF y dónde continuar la
+lista al añadir. Varios casos están tomados de proformas reales de
+proveedor. Además revisan que el
 diálogo y el servidor se llamen por los mismos nombres y usen los mismos
 campos: un cambio en un solo lado se manifestaría como un fallo mudo en
 pantalla.

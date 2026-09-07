@@ -39,6 +39,12 @@ const AJUSTES = {
   /** Filas donde buscar esos encabezados. */
   FILAS_A_REVISAR: 40,
 
+  /**
+   * Encabezado de la columna de cantidad. Las líneas de ítem que la tengan
+   * vacía no salen en el PDF, y su espacio se cierra.
+   */
+  COLUMNA_CANTIDAD: ['CANTIDAD', 'CANT', 'CANT.', 'QTY'],
+
   /** Carpeta de Drive donde se guardan los PDF. Se crea sola. */
   CARPETA_PDF: 'Proformas REDESK',
 
@@ -130,7 +136,7 @@ function reconocerArchivo(base64, nombre, tipo) {
 
   const items = esHojaDeCalculo_(tipo, etiqueta)
     ? itemsDeHojaSubida_(contenido, etiqueta)
-    : extraerItems_(textoPorOcr_(contenido, etiqueta));
+    : itemsPorOcr_(contenido, etiqueta);
 
   return { archivo: etiqueta, items: etiquetar_(items, etiqueta) };
 }
@@ -238,24 +244,60 @@ function itemsDeLibro_(libro, nombreBase) {
 }
 
 /**
- * Pasa un PDF o una imagen por el OCR de Drive y devuelve su texto.
+ * Pasa un PDF o una imagen por el OCR de Drive y saca sus productos.
  *
- * Drive reconoce el texto al subir el archivo pidiendo que se convierta en
- * Documento de Google. El documento intermedio se descarta.
+ * Una proforma de proveedor suele venir en tabla, y al convertirla a
+ * Documento de Google esa tabla se conserva. Leerla como tabla da la columna
+ * de precio exacta; tratarla como texto suelto obligaría a adivinar cuál de
+ * los números de la fila es el precio, y en una línea del tipo
+ * "… WIFI 6  1.00  100.80  100.80" es fácil quedarse con el total.
+ *
+ * Sólo cuando no hay tablas aprovechables se lee el texto línea a línea.
  *
  * @param {!GoogleAppsScript.Base.Blob} contenido
  * @param {string} nombre
- * @return {string}
+ * @return {!Array<!Object>}
  */
-function textoPorOcr_(contenido, nombre) {
+function itemsPorOcr_(contenido, nombre) {
   const id = subirConvertido_(
     contenido, 'OCR ' + nombre, MimeType.GOOGLE_DOCS,
     { ocrLanguage: AJUSTES.IDIOMA_OCR });
+
   try {
-    return exportarComoTexto_(id);
+    const cuerpo = DocumentApp.openById(id).getBody();
+
+    const items = [];
+    for (let i = 0; i < cuerpo.getNumChildren(); i++) {
+      const hijo = cuerpo.getChild(i);
+      if (hijo.getType() !== DocumentApp.ElementType.TABLE) continue;
+      extraerDeTabla_(filasDeTabla_(hijo.asTable())).forEach(function (item) {
+        items.push(item);
+      });
+    }
+    if (items.length) return items;
+
+    return extraerItems_(cuerpo.getText());
   } finally {
     borrarTemporal_(id);
   }
+}
+
+/**
+ * Vuelca una tabla de un documento en filas de texto.
+ * @param {!GoogleAppsScript.Document.Table} tabla
+ * @return {!Array<!Array<string>>}
+ */
+function filasDeTabla_(tabla) {
+  const filas = [];
+  for (let f = 0; f < tabla.getNumRows(); f++) {
+    const fila = tabla.getRow(f);
+    const celdas = [];
+    for (let c = 0; c < fila.getNumCells(); c++) {
+      celdas.push(fila.getCell(c).getText());
+    }
+    filas.push(celdas);
+  }
+  return filas;
 }
 
 /**
@@ -312,27 +354,6 @@ function subirConvertido_(contenido, nombre, mimeDestino, parametros) {
       respuesta.getContentText().slice(0, 200));
   }
   return JSON.parse(respuesta.getContentText()).id;
-}
-
-/**
- * Descarga como texto plano un documento de Drive.
- * @param {string} id
- * @return {string}
- */
-function exportarComoTexto_(id) {
-  const respuesta = UrlFetchApp.fetch(
-    'https://www.googleapis.com/drive/v3/files/' + id +
-    '/export?mimeType=text%2Fplain',
-    {
-      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-      muteHttpExceptions: true,
-    });
-
-  if (respuesta.getResponseCode() >= 300) {
-    throw new Error('No pude leer el texto reconocido (código ' +
-      respuesta.getResponseCode() + ').');
-  }
-  return respuesta.getContentText();
 }
 
 /**
@@ -486,13 +507,20 @@ function aNumero_(texto) {
 /**
  * Elige cuál de los números de una línea es el precio.
  *
- * Se prefiere, por este orden: el que lleva símbolo de moneda, el último con
- * dos decimales, y sólo si no hay ninguno, el último número suelto. Ese orden
- * evita el error típico de tomar por precio el "6" de "WIFI 6" o el "2" de
- * "2X2" cuando en la línea hay un importe de verdad.
+ * Por este orden:
+ *
+ * 1. El patrón `… cantidad precio total`, cuando cantidad × precio da el
+ *    total. Es como imprimen las proformas de proveedor, y sin esta regla se
+ *    tomaría el total por precio.
+ * 2. El número con símbolo de moneda.
+ * 3. El último con dos decimales.
+ * 4. El último número suelto — y entonces se avisa de que no es seguro.
+ *
+ * `corte` dice dónde termina la descripción, que no siempre es donde empieza
+ * el precio: en el caso 1 la descripción acaba antes de la cantidad.
  *
  * @param {string} linea
- * @return {?{indice: number, texto: string, seguro: boolean}}
+ * @return {?{indice: number, texto: string, corte: number, seguro: boolean}}
  */
 function elegirPrecio_(linea) {
   const candidatos = [];
@@ -503,26 +531,68 @@ function elegirPrecio_(linea) {
     candidatos.push({
       indice: m.index,
       texto: m[0],
+      valor: aNumero_(valor),
       moneda: !!m[1],
       decimales: /[.,]\d{2}$/.test(valor),
     });
   }
   if (!candidatos.length) return null;
 
+  const conCantidad = porCantidadPorPrecio_(candidatos);
+  if (conCantidad) return conCantidad;
+
   const conMoneda = candidatos.filter(function (c) { return c.moneda; });
-  if (conMoneda.length) {
-    const c = conMoneda[conMoneda.length - 1];
-    return { indice: c.indice, texto: c.texto, seguro: true };
-  }
+  if (conMoneda.length) return elegido_(conMoneda[conMoneda.length - 1], true);
 
   const conDecimales = candidatos.filter(function (c) { return c.decimales; });
   if (conDecimales.length) {
-    const c = conDecimales[conDecimales.length - 1];
-    return { indice: c.indice, texto: c.texto, seguro: true };
+    return elegido_(conDecimales[conDecimales.length - 1], true);
   }
 
-  const c = candidatos[candidatos.length - 1];
-  return { indice: c.indice, texto: c.texto, seguro: false };
+  return elegido_(candidatos[candidatos.length - 1], false);
+}
+
+/**
+ * Da por elegido un candidato, cortando la descripción justo antes de él.
+ * @param {!Object} candidato
+ * @param {boolean} seguro
+ * @return {{indice: number, texto: string, corte: number, seguro: boolean}}
+ */
+function elegido_(candidato, seguro) {
+  return {
+    indice: candidato.indice,
+    texto: candidato.texto,
+    corte: candidato.indice,
+    seguro: seguro,
+  };
+}
+
+/**
+ * Busca al final de la línea el patrón cantidad, precio y total, donde el
+ * total es el producto de los dos primeros.
+ *
+ * @param {!Array<!Object>} candidatos
+ * @return {?{indice: number, texto: string, corte: number, seguro: boolean}}
+ */
+function porCantidadPorPrecio_(candidatos) {
+  if (candidatos.length < 3) return null;
+
+  const cantidad = candidatos[candidatos.length - 3];
+  const precio = candidatos[candidatos.length - 2];
+  const total = candidatos[candidatos.length - 1];
+
+  if (!(cantidad.valor > 0) || !(precio.valor > 0) || !(total.valor > 0)) {
+    return null;
+  }
+  // Un céntimo de tolerancia por los redondeos de la propia proforma.
+  if (Math.abs(cantidad.valor * precio.valor - total.valor) > 0.01) return null;
+
+  return {
+    indice: precio.indice,
+    texto: precio.texto,
+    corte: cantidad.indice,
+    seguro: true,
+  };
 }
 
 /**
@@ -541,7 +611,8 @@ function lineaAItem_(linea) {
   const importe = aNumero_(precio.texto);
   if (importe === null || !(importe > 0)) return null;
 
-  const descripcion = texto.slice(0, precio.indice)
+
+  const descripcion = texto.slice(0, precio.corte)
     .replace(/[\s.\-–—:|_]+$/, '')
     .trim();
 
@@ -756,6 +827,54 @@ function idDeUrl_(url) {
   return /^[a-zA-Z0-9_-]{20,}$/.test(texto) ? texto : '';
 }
 
+/** Comienzos de fila que cierran la tabla de ítems. */
+const FIN_DE_ITEMS = ['SUBTOTAL', 'SUB TOTAL', 'TOTAL', 'IVA', 'DESCUENTO'];
+
+/**
+ * Filas de la tabla de ítems que no tienen cantidad, y que por tanto no
+ * deben salir en el PDF.
+ *
+ * La tabla se considera terminada en la primera fila que contenga SUBTOTAL,
+ * TOTAL, IVA o DESCUENTO: esas filas también tienen la cantidad vacía, pero
+ * son los totales y tienen que imprimirse.
+ *
+ * @param {!Array<!Array<*>>} datos valores de la hoja, desde la fila 1
+ * @param {number} filaCabecera índice de la fila de encabezados
+ * @param {number} colCantidad índice de la columna de cantidad
+ * @return {!Array<number>} índices de las filas a ocultar
+ */
+function filasSinCantidad_(datos, filaCabecera, colCantidad) {
+  const vacias = [];
+
+  for (let f = filaCabecera + 1; f < datos.length; f++) {
+    const fila = datos[f] || [];
+    if (esFinDeItems_(fila)) break;
+
+    const cantidad = normalizarTexto_(fila[colCantidad]);
+    if (cantidad === '') vacias.push(f);
+  }
+  return vacias;
+}
+
+/**
+ * ¿Esta fila cierra la tabla de ítems?
+ * @param {!Array<*>} fila
+ * @return {boolean}
+ */
+function esFinDeItems_(fila) {
+  for (let c = 0; c < fila.length; c++) {
+    const valor = normalizar_(fila[c]).replace(/:$/, '');
+    if (!valor) continue;
+    for (let i = 0; i < FIN_DE_ITEMS.length; i++) {
+      if (valor === FIN_DE_ITEMS[i] ||
+          valor.indexOf(FIN_DE_ITEMS[i] + ' ') === 0) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Clave con la que se reconocen dos líneas iguales, para poder avisar de las
  * repetidas cuando se leen varios archivos del mismo proveedor.
@@ -803,7 +922,8 @@ function hayContenido_(bloque) {
 // ===========================================================================
 
 /**
- * Exporta la hoja activa a PDF sin las columnas COSTO ni UTILIDAD.
+ * Exporta la hoja activa a PDF sin las columnas COSTO ni UTILIDAD, y sin las
+ * líneas de ítem que estén sin cantidad.
  *
  * Se exporta la propia hoja en vez de recomponer el documento en otro sitio:
  * así el PDF conserva el diseño, los logos y los formatos que ya tienes, sin
@@ -812,29 +932,107 @@ function hayContenido_(bloque) {
 function generarPdfParaEnviar() {
   ejecutar_(function () {
     const hoja = SpreadsheetApp.getActiveSheet();
-    const ocultadas = ocultarColumnas_(hoja, AJUSTES.COLUMNAS_OCULTAS);
+    const datos = leerCuadricula_(hoja);
+
+    const columnas = ocultarColumnas_(hoja, AJUSTES.COLUMNAS_OCULTAS);
+    const filas = ocultarFilasVacias_(hoja, datos);
 
     let archivo;
     try {
       // Sin esto la exportación puede leer la hoja antes de que se apliquen
-      // las columnas ocultas.
+      // las columnas y las filas ocultas.
       SpreadsheetApp.flush();
       archivo = guardarPdf_(hoja);
     } finally {
-      mostrarColumnas_(hoja, ocultadas);
+      columnas.forEach(function (c) { hoja.showColumns(c.columna); });
+      filas.forEach(function (f) { hoja.showRows(f); });
       SpreadsheetApp.flush();
     }
 
-    const aviso = ocultadas.length
-      ? 'Se ocultaron las columnas ' + ocultadas.map(function (c) {
-        return c.titulo;
-      }).join(' y ') + '.'
-      : 'Aviso: no encontré ninguna columna llamada ' +
-        AJUSTES.COLUMNAS_OCULTAS.join(' ni ') +
-        ', así que el PDF las incluye si existen con otro nombre.';
-
-    mostrarEnlace_(archivo, aviso, ocultadas.length > 0);
+    mostrarEnlace_(archivo, resumen_(columnas, filas), columnas.length > 0);
   });
+}
+
+/**
+ * Redacta lo que se dejó fuera del PDF.
+ * @param {!Array<{titulo: string}>} columnas
+ * @param {!Array<number>} filas
+ * @return {string}
+ */
+function resumen_(columnas, filas) {
+  const partes = [];
+
+  if (columnas.length) {
+    partes.push('Fuera del PDF: ' + columnas.map(function (c) {
+      return c.titulo;
+    }).join(' y ') + '.');
+  } else {
+    partes.push('Aviso: no encontré ninguna columna llamada ' +
+      AJUSTES.COLUMNAS_OCULTAS.join(' ni ') + '.');
+  }
+
+  if (filas.length) {
+    partes.push('Se omitieron ' + filas.length +
+      ' línea(s) sin cantidad y se cerró su espacio.');
+  }
+  return partes.join(' ');
+}
+
+/**
+ * Lee de una vez la parte de la hoja donde están los encabezados y los ítems.
+ * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
+ * @return {!Array<!Array<string>>}
+ */
+function leerCuadricula_(hoja) {
+  const filas = Math.min(
+    Math.max(hoja.getLastRow(), 1), AJUSTES.FILAS_MAX_HOJA);
+  const columnas = Math.max(hoja.getLastColumn(), 1);
+  return hoja.getRange(1, 1, filas, columnas).getDisplayValues();
+}
+
+/**
+ * Oculta las líneas de ítem que no tienen cantidad.
+ *
+ * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
+ * @param {!Array<!Array<string>>} datos
+ * @return {!Array<number>} filas ocultadas, en numeración de hoja
+ */
+function ocultarFilasVacias_(hoja, datos) {
+  const cabecera = buscarCelda_(datos, AJUSTES.COLUMNA_CANTIDAD);
+  if (!cabecera) return [];
+
+  const ocultadas = [];
+  filasSinCantidad_(datos, cabecera.fila, cabecera.columna).forEach(function (f) {
+    const fila = f + 1;
+    // Una fila que ya estuviera oculta a propósito no hay que volver a
+    // mostrarla al terminar.
+    if (hoja.isRowHiddenByUser(fila)) return;
+    hoja.hideRows(fila);
+    ocultadas.push(fila);
+  });
+  return ocultadas;
+}
+
+/**
+ * Busca la celda cuyo contenido coincide con alguno de los títulos dados.
+ *
+ * @param {!Array<!Array<string>>} datos
+ * @param {!Array<string>} titulos
+ * @return {?{fila: number, columna: number}} índices desde cero
+ */
+function buscarCelda_(datos, titulos) {
+  const buscados = titulos.map(normalizar_);
+  const limite = Math.min(datos.length, AJUSTES.FILAS_A_REVISAR);
+
+  for (let f = 0; f < limite; f++) {
+    for (let c = 0; c < datos[f].length; c++) {
+      const valor = normalizar_(datos[f][c]).replace(/:$/, '');
+      if (valor && buscados.indexOf(valor) !== -1) {
+        return { fila: f, columna: c };
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -851,17 +1049,6 @@ function ocultarColumnas_(hoja, nombres) {
     hoja.hideColumns(c.columna);
   });
   return encontradas;
-}
-
-/**
- * Vuelve a mostrar las columnas que se ocultaron.
- * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
- * @param {!Array<{columna: number}>} columnas
- */
-function mostrarColumnas_(hoja, columnas) {
-  columnas.forEach(function (c) {
-    hoja.showColumns(c.columna);
-  });
 }
 
 /**
