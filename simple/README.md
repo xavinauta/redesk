@@ -6,7 +6,7 @@ nada que no le pidas.
 
 | Comando | Qué hace |
 |---|---|
-| `REDESK ▸ Leer precios de proveedor…` | Eliges un PDF o una foto del proveedor, se le pasa el OCR y se proponen los pares **descripción / precio**. Revisas, marcas y se escriben desde la celda seleccionada. |
+| `REDESK ▸ Leer precios de proveedor…` | Eliges **uno o varios** PDF o fotos, se les pasa el OCR y se proponen los pares **descripción / precio**. Revisas todo junto, marcas, y se **añaden** desde la celda seleccionada. |
 | `REDESK ▸ Generar PDF para enviar` | Oculta las columnas **COSTO** y **UTILIDAD**, exporta la hoja a PDF y las vuelve a mostrar. |
 
 ## Por qué el PDF se genera así
@@ -19,6 +19,33 @@ imágenes por su cuenta.
 
 Las columnas se ocultan sólo mientras dura la exportación, y se restauran
 aunque la exportación falle.
+
+## Varios archivos en la misma tanda
+
+El selector admite varios archivos a la vez, y se pueden añadir más sin
+perder lo ya reconocido. Se leen **uno tras otro**, no a la vez: cada
+reconocimiento es una subida a Drive, y lanzarlos en paralelo agota la cuota.
+
+Cada línea muestra de qué archivo salió. Si la misma descripción con el mismo
+precio aparece dos veces —típico al fotografiar la misma lista dos veces—, la
+segunda llega marcada como repetida y desmarcada.
+
+Un archivo ilegible no tumba la tanda: se anota su error y se sigue con el
+resto.
+
+## Cómo se añaden a la hoja
+
+**Nunca sobrescribe.** Partiendo de la celda seleccionada:
+
+1. Si esa celda ya tiene algo, baja hasta la primera libre, para añadir a
+   continuación de la lista que ya tengas.
+2. Si lo que viene debajo está ocupado, inserta exactamente tantas filas como
+   líneas vayas a añadir, de modo que el hueco quede justo y no se desplace
+   mal nada de la hoja.
+3. Si la hoja se queda corta de filas, la agranda.
+
+Así una cotización con más ítems que filas disponibles entra entera. El
+mensaje final dice cuántas líneas se añadieron y si hubo que insertar filas.
 
 ## Instalación
 
@@ -66,10 +93,15 @@ Nada se escribe en la hoja hasta que lo marcas en el diálogo.
 node test/parser.test.js
 ```
 
-Cubren lo único que tiene lógica de verdad: los dos formatos decimales
-(`1.234,56` y `1,234.56`), la elección del precio entre varios números y el
-descarte del ruido. El resto —diálogos, Drive, exportación— depende de
-Google y se comprueba ejecutando los comandos.
+Las pruebas **extraen el código de `Codigo.gs`** —el bloque marcado como
+`LÓGICA PROBADA`— y lo ejecutan con Node, así que comprueban exactamente lo
+que corre en la hoja, sin una copia paralela que pueda quedarse atrás.
 
-`simple/parser.js` es ese mismo código, aparte, para poder probarlo con Node;
-está incluido tal cual dentro de `Codigo.gs`.
+Cubren los dos formatos decimales (`1.234,56` y `1,234.56`), la elección del
+precio entre varios números, el descarte del ruido, la detección de líneas
+repetidas y dónde continuar la lista al añadir. Además revisan que el diálogo
+y el servidor se llamen por los mismos nombres y usen los mismos campos: un
+cambio en un solo lado se manifestaría como un fallo mudo en pantalla.
+
+El resto —Drive, el OCR y la exportación— depende de Google y se comprueba
+ejecutando los comandos.

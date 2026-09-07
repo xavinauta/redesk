@@ -1,10 +1,12 @@
 <!--
   Diálogo de "Leer precios de proveedor".
 
-  Se elige un PDF o una foto, se envía al script, y se muestran las líneas
-  reconocidas para revisarlas antes de escribir nada en la hoja. Las que el
-  reconocimiento no da por seguras llegan desmarcadas: el precio de esas
-  suele ser un número del propio nombre del producto.
+  Admite varios archivos en la misma tanda: se leen uno a uno, los resultados
+  se van acumulando y se revisan todos juntos antes de escribir nada en la
+  hoja. Se puede volver a añadir archivos sin perder lo ya reconocido.
+
+  Las líneas que el reconocimiento no da por seguras, y las repetidas entre
+  archivos, llegan desmarcadas.
 -->
 <style>
   body {
@@ -24,7 +26,6 @@
     text-align: center;
     background: #fafbfc;
   }
-  .caja input { font-size: 13px; }
 
   button {
     font-family: inherit;
@@ -39,13 +40,28 @@
   button:disabled { opacity: .5; cursor: default; }
   button.secundario { background: #fff; color: #1a73e8; }
 
-  #estado { margin: 12px 0; min-height: 20px; }
+  .estado { margin: 12px 0; min-height: 18px; }
   .error { color: #c5221f; }
   .ok { color: #1e8e3e; }
 
+  #progreso { margin: 12px 0; }
+  #progreso div {
+    padding: 3px 0;
+    border-bottom: 1px solid #f1f3f4;
+    display: flex;
+    gap: 8px;
+  }
+  #progreso .nombre {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #progreso .dato { color: #5f6368; white-space: nowrap; }
+
   #resultado { display: none; }
   .tabla-caja {
-    max-height: 300px;
+    max-height: 260px;
     overflow-y: auto;
     border: 1px solid #dadce0;
     border-radius: 4px;
@@ -70,31 +86,45 @@
     vertical-align: top;
   }
   td.precio { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.dudosa td { background: #fef7e0; }
-  .marca-dudosa {
-    color: #b06000;
+  td.archivo {
+    color: #5f6368;
     font-size: 11px;
-    display: block;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  .pie { display: flex; align-items: center; gap: 10px; }
+  tr.dudosa td { background: #fef7e0; }
+  tr.repetida td { background: #f8f9fa; color: #80868b; }
+  .nota { font-size: 11px; display: block; }
+  .nota.aviso { color: #b06000; }
+  .nota.repe { color: #80868b; }
+
+  .pie { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .pie .cuenta { color: #5f6368; margin-right: auto; }
 </style>
 
 <h2>Leer precios de proveedor</h2>
 <p class="ayuda">
-  Elige el PDF o la foto que te envió el proveedor. Se reconocen la
-  descripción y el precio de cada línea; el resto lo escribes tú.
+  Elige uno o varios PDF o fotos. Se reconocen la descripción y el precio de
+  cada línea; el resto lo escribes tú.
 </p>
 
 <div id="paso-archivo">
   <div class="caja">
-    <input type="file" id="archivo" accept="image/*,application/pdf">
+    <input type="file" id="archivo" accept="image/*,application/pdf" multiple>
     <p class="ayuda" style="margin:10px 0 0">
-      Cuanto más nítida y recortada esté la imagen, mejor sale.
+      Puedes seleccionar varios a la vez. Cuanto más nítida y recortada esté
+      cada imagen, mejor sale.
     </p>
   </div>
-  <div id="estado"></div>
-  <button id="leer" disabled>Leer archivo</button>
+  <div id="progreso"></div>
+  <div class="estado" id="estado"></div>
+  <div class="pie">
+    <span class="cuenta" id="acumulado"></span>
+    <button class="secundario" id="volver" style="display:none">Ver lo reconocido</button>
+    <button id="leer" disabled>Leer archivos</button>
+  </div>
 </div>
 
 <div id="resultado">
@@ -102,9 +132,10 @@
     <table>
       <thead>
         <tr>
-          <th style="width:28px"><input type="checkbox" id="todos" checked></th>
+          <th style="width:28px"><input type="checkbox" id="todos"></th>
           <th>Descripción</th>
-          <th style="width:90px; text-align:right">Precio</th>
+          <th style="width:86px; text-align:right">Precio</th>
+          <th style="width:120px">Archivo</th>
         </tr>
       </thead>
       <tbody id="filas"></tbody>
@@ -112,21 +143,29 @@
   </div>
   <div class="pie">
     <span class="cuenta" id="cuenta"></span>
-    <button class="secundario" id="otro">Otro archivo</button>
-    <button id="insertar">Insertar en la hoja</button>
+    <button class="secundario" id="mas">Añadir más archivos</button>
+    <button id="insertar">Añadir a la hoja</button>
   </div>
-  <div id="estado2"></div>
+  <div class="estado" id="estado2"></div>
 </div>
 
 <script>
+  // Todo lo reconocido en esta sesión del diálogo, de todos los archivos.
   var items = [];
 
-  var $ = function (id) { return document.getElementById(id); };
+  function $(id) { return document.getElementById(id); }
 
   function estado(donde, texto, clase) {
     var el = $(donde);
     el.textContent = texto || '';
-    el.className = clase || '';
+    el.className = 'estado ' + (clase || '');
+  }
+
+  function acumulado() {
+    $('acumulado').textContent = items.length
+      ? items.length + ' línea(s) reconocidas hasta ahora'
+      : '';
+    $('volver').style.display = items.length ? 'inline-block' : 'none';
   }
 
   $('archivo').addEventListener('change', function () {
@@ -135,77 +174,139 @@
   });
 
   $('leer').addEventListener('click', function () {
-    var archivo = $('archivo').files[0];
-    if (!archivo) return;
+    var archivos = Array.prototype.slice.call($('archivo').files);
+    if (!archivos.length) return;
 
     $('leer').disabled = true;
-    estado('estado', 'Reconociendo… esto tarda unos segundos.');
+    $('progreso').innerHTML = '';
+    estado('estado', '');
+    leerUno(archivos, 0);
+  });
+
+  /**
+   * Lee los archivos de uno en uno. En serie y no en paralelo: cada OCR es
+   * una subida a Drive, y lanzarlos todos a la vez agota la cuota.
+   */
+  function leerUno(archivos, i) {
+    if (i >= archivos.length) {
+      $('leer').disabled = false;
+      $('archivo').value = '';
+      if (items.length) mostrar();
+      else estado('estado', 'Ningún archivo dio líneas reconocibles.', 'error');
+      return;
+    }
+
+    var archivo = archivos[i];
+    var linea = document.createElement('div');
+    var nombre = document.createElement('span');
+    nombre.className = 'nombre';
+    nombre.textContent = archivo.name;
+    var dato = document.createElement('span');
+    dato.className = 'dato';
+    dato.textContent = 'leyendo…';
+    linea.appendChild(nombre);
+    linea.appendChild(dato);
+    $('progreso').appendChild(linea);
+
+    estado('estado', 'Archivo ' + (i + 1) + ' de ' + archivos.length +
+      '. Esto tarda unos segundos por archivo.');
 
     var lector = new FileReader();
     lector.onerror = function () {
-      $('leer').disabled = false;
-      estado('estado', 'No pude leer el archivo desde tu equipo.', 'error');
+      dato.textContent = 'no se pudo abrir';
+      dato.className = 'dato error';
+      leerUno(archivos, i + 1);
     };
     lector.onload = function (e) {
       // Se envía sólo el contenido, sin la cabecera "data:...;base64,".
       var base64 = String(e.target.result).split(',')[1];
       google.script.run
-        .withSuccessHandler(mostrar)
+        .withSuccessHandler(function (resultado) {
+          var nuevos = resultado.items || [];
+          items = items.concat(nuevos);
+          dato.textContent = nuevos.length
+            ? nuevos.length + ' línea(s)'
+            : 'sin resultados';
+          dato.className = 'dato' + (nuevos.length ? ' ok' : '');
+          acumulado();
+          leerUno(archivos, i + 1);
+        })
         .withFailureHandler(function (err) {
-          $('leer').disabled = false;
-          estado('estado', err.message || String(err), 'error');
+          dato.textContent = err.message || String(err);
+          dato.className = 'dato error';
+          leerUno(archivos, i + 1);
         })
         .reconocerArchivo(base64, archivo.name, archivo.type);
     };
     lector.readAsDataURL(archivo);
-  });
+  }
 
-  function mostrar(encontrados) {
-    items = encontrados;
+  function mostrar() {
     var cuerpo = $('filas');
     cuerpo.innerHTML = '';
+    var vistas = {};
 
-    encontrados.forEach(function (item, i) {
+    items.forEach(function (item, i) {
+      var repetida = !!vistas[item.clave];
+      vistas[item.clave] = true;
+
       var fila = document.createElement('tr');
-      if (!item.seguro) fila.className = 'dudosa';
+      if (repetida) fila.className = 'repetida';
+      else if (!item.seguro) fila.className = 'dudosa';
 
       var celdaMarca = document.createElement('td');
       var marca = document.createElement('input');
       marca.type = 'checkbox';
-      marca.checked = item.seguro;
+      marca.checked = item.seguro && !repetida;
       marca.dataset.indice = String(i);
       marca.addEventListener('change', contar);
       celdaMarca.appendChild(marca);
 
       var celdaDesc = document.createElement('td');
       celdaDesc.textContent = item.descripcion;
-      if (!item.seguro) {
-        var nota = document.createElement('span');
-        nota.className = 'marca-dudosa';
-        nota.textContent = 'Sin decimales ni símbolo: revisa que el precio sea ése.';
-        celdaDesc.appendChild(nota);
+      if (repetida) {
+        celdaDesc.appendChild(nota('Repetida: ya aparece más arriba.', 'repe'));
+      } else if (!item.seguro) {
+        celdaDesc.appendChild(nota(
+          'Sin decimales ni símbolo: revisa que el precio sea ése.', 'aviso'));
       }
 
       var celdaPrecio = document.createElement('td');
       celdaPrecio.className = 'precio';
-      celdaPrecio.textContent = item.precio.toFixed(2);
+      celdaPrecio.textContent = Number(item.precio).toFixed(2);
+
+      var celdaArchivo = document.createElement('td');
+      celdaArchivo.className = 'archivo';
+      celdaArchivo.textContent = item.archivo || '';
+      celdaArchivo.title = item.archivo || '';
 
       fila.appendChild(celdaMarca);
       fila.appendChild(celdaDesc);
       fila.appendChild(celdaPrecio);
+      fila.appendChild(celdaArchivo);
       cuerpo.appendChild(fila);
     });
 
     $('paso-archivo').style.display = 'none';
     $('resultado').style.display = 'block';
+    estado('estado2', '');
     contar();
+  }
+
+  function nota(texto, clase) {
+    var el = document.createElement('span');
+    el.className = 'nota ' + clase;
+    el.textContent = texto;
+    return el;
   }
 
   function marcadas() {
     var seleccion = [];
     var marcas = $('filas').querySelectorAll('input[type=checkbox]');
     for (var i = 0; i < marcas.length; i++) {
-      if (marcas[i].checked) seleccion.push(items[Number(marcas[i].dataset.indice)]);
+      if (marcas[i].checked) {
+        seleccion.push(items[Number(marcas[i].dataset.indice)]);
+      }
     }
     return seleccion;
   }
@@ -214,6 +315,7 @@
     var n = marcadas().length;
     $('cuenta').textContent = n + ' de ' + items.length + ' marcadas';
     $('insertar').disabled = n === 0;
+    $('todos').checked = n === items.length && n > 0;
   }
 
   $('todos').addEventListener('change', function () {
@@ -222,18 +324,22 @@
     contar();
   });
 
-  $('otro').addEventListener('click', function () {
+  $('mas').addEventListener('click', function () {
     $('resultado').style.display = 'none';
     $('paso-archivo').style.display = 'block';
+    $('progreso').innerHTML = '';
     $('archivo').value = '';
     $('leer').disabled = true;
     estado('estado', '');
-    estado('estado2', '');
+    acumulado();
   });
 
+  $('volver').addEventListener('click', mostrar);
+
   $('insertar').addEventListener('click', function () {
+    var seleccion = marcadas();
     $('insertar').disabled = true;
-    estado('estado2', 'Escribiendo en la hoja…');
+    estado('estado2', 'Añadiendo ' + seleccion.length + ' línea(s)…');
     google.script.run
       .withSuccessHandler(function (mensaje) {
         estado('estado2', mensaje + ' Ya puedes cerrar.', 'ok');
@@ -242,6 +348,6 @@
         $('insertar').disabled = false;
         estado('estado2', err.message || String(err), 'error');
       })
-      .insertarItems(marcadas());
+      .insertarItems(seleccion);
   });
 </script>

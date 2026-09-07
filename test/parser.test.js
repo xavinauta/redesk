@@ -1,7 +1,12 @@
 /**
- * Pruebas del reconocimiento de descripción y precio.
+ * Pruebas de la lógica de simple/Codigo.gs.
  *
  *     node test/parser.test.js
+ *
+ * El código a probar se extrae del propio Codigo.gs, del bloque marcado como
+ * LÓGICA PROBADA, y se ejecuta con Node. Así no hay una copia paralela que
+ * pueda desincronizarse: lo que se prueba es exactamente lo que corre en la
+ * hoja.
  *
  * Los casos son líneas como las que devuelve el OCR de una lista de precios
  * de proveedor: nombres de producto con números dentro, importes en los dos
@@ -11,12 +16,44 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { aNumero_, lineaAItem_, pareceProducto_, extraerItems_ } =
-  require('../simple/parser.js');
+const vm = require('vm');
+
+const CODIGO = path.join(__dirname, '..', 'simple', 'Codigo.gs');
+
+/**
+ * Extrae el bloque probado de Codigo.gs y lo ejecuta en un contexto aislado.
+ * @return {!Object} el contexto, con las funciones del bloque
+ */
+function cargarLogica() {
+  const fuente = fs.readFileSync(CODIGO, 'utf8');
+  const inicio = fuente.indexOf('LÓGICA PROBADA — inicio');
+  const fin = fuente.indexOf('LÓGICA PROBADA — fin');
+  assert.ok(inicio !== -1 && fin > inicio,
+    'faltan los marcadores LÓGICA PROBADA en simple/Codigo.gs');
+
+  const bloque = fuente.slice(fuente.indexOf('\n', inicio), fin);
+  const contexto = { console };
+  vm.createContext(contexto);
+  vm.runInContext(bloque, contexto, { filename: 'Codigo.gs' });
+  return contexto;
+}
+
+const L = cargarLogica();
+const { aNumero_, lineaAItem_, pareceProducto_, extraerItems_ } = L;
 
 let pasadas = 0;
 const casos = [];
 const prueba = (nombre, fn) => casos.push([nombre, fn]);
+
+/**
+ * Compara estructuras que salen del contexto `vm`. Sus arrays y objetos
+ * llevan el prototipo de ese contexto, así que deepStrictEqual los rechaza
+ * aunque el contenido coincida; normalizar por JSON compara lo que importa.
+ */
+function igual(actual, esperado, mensaje) {
+  assert.deepStrictEqual(
+    JSON.parse(JSON.stringify(actual)), esperado, mensaje);
+}
 
 // ------------------------------------------------------------- importes
 
@@ -117,7 +154,6 @@ prueba('pareceProducto_ no descarta productos que empiezan parecido', () => {
       pareceProducto_({ descripcion: d, precio: p, seguro: true }), true, d);
   si('TOTALPLAY ROUTER AC1200', 45.9);
   si('IVACOM SWITCH 24P', 210);
-  // 2026 con decimales sí es un importe creíble.
   assert.strictEqual(
     pareceProducto_({ descripcion: 'SERVIDOR DELL R250', precio: 2026.40, seguro: true }),
     true);
@@ -141,42 +177,60 @@ prueba('extraerItems_ procesa una lista completa y descarta el ruido', () => {
   const items = extraerItems_(ocr);
   assert.strictEqual(items.length, 3,
     'las cabeceras y el pie no son productos: ' + JSON.stringify(items));
-  assert.deepStrictEqual(items.map((i) => i.precio), [105.84, 178.5, 92.3]);
+  igual(items.map((i) => i.precio), [105.84, 178.5, 92.3]);
   assert.ok(items[0].descripcion.startsWith('GRANDSTREAM GWN7660ELR'));
 });
 
 prueba('extraerItems_ tolera un texto vacío', () => {
-  assert.deepStrictEqual(extraerItems_(''), []);
-  assert.deepStrictEqual(extraerItems_(null), []);
+  igual(extraerItems_(''), []);
+  igual(extraerItems_(null), []);
 });
 
-// -------------------------------------------------------------- sincronía
+// --------------------------------------------------- líneas repetidas
 
-prueba('Codigo.gs lleva dentro el mismo parser que se prueba aquí', () => {
-  // parser.js existe aparte sólo para poder probarlo con Node. Si los dos se
-  // separan, las pruebas dejarían de decir nada sobre lo que corre en la hoja.
-  const parser = fs.readFileSync(
-    path.join(__dirname, '..', 'simple', 'parser.js'), 'utf8');
-  const codigo = fs.readFileSync(
-    path.join(__dirname, '..', 'simple', 'Codigo.gs'), 'utf8');
-
-  const sinExport = parser.slice(0, parser.indexOf('// Sólo para las pruebas'));
-  const cuerpo = sinExport.slice(sinExport.indexOf(' */') + 4).trim();
-
-  assert.ok(codigo.includes(cuerpo),
-    'simple/Codigo.gs quedó desincronizado de simple/parser.js');
-  assert.ok(!codigo.includes('module.exports'),
-    'Codigo.gs no debe llevar el export de Node');
+prueba('claveItem_ iguala las líneas que son la misma', () => {
+  const clave = L.claveItem_;
+  // Al leer dos fotos de la misma lista, la misma línea no debe colarse dos
+  // veces sin avisar.
+  assert.strictEqual(
+    clave({ descripcion: 'SWITCH  TP-LINK 24P', precio: 92.3 }),
+    clave({ descripcion: 'switch tp-link 24p', precio: 92.30 }));
+  assert.notStrictEqual(
+    clave({ descripcion: 'SWITCH TP-LINK 24P', precio: 92.3 }),
+    clave({ descripcion: 'SWITCH TP-LINK 24P', precio: 95 }));
 });
+
+// ------------------------------------------- dónde escribir en la hoja
+
+prueba('indiceLibre_ encuentra dónde continuar la lista', () => {
+  const libre = L.indiceLibre_;
+  assert.strictEqual(libre(['MONITOR', 'TECLADO', '', '']), 2,
+    'se añade debajo de lo que ya hay');
+  assert.strictEqual(libre(['', 'TECLADO']), 0,
+    'si la celda de partida está libre, se empieza ahí');
+  assert.strictEqual(libre(['  ', 'X']), 0, 'los espacios no cuentan');
+  assert.strictEqual(libre(['A', 'B']), 2, 'si no hay hueco, va al final');
+  assert.strictEqual(libre([]), 0);
+});
+
+prueba('hayContenido_ detecta si el hueco está ocupado', () => {
+  const hay = L.hayContenido_;
+  assert.strictEqual(hay([['', ''], ['', '']]), false);
+  assert.strictEqual(hay([['', ''], ['', '9.90']]), true,
+    'un precio suelto también ocupa');
+  assert.strictEqual(hay([[null, undefined]]), false);
+  assert.strictEqual(hay([]), false);
+});
+
+// -------------------------------------------------- diálogo y servidor
 
 prueba('Codigo.gs y dialogo.html se llaman por los mismos nombres', () => {
-  const codigo = fs.readFileSync(
-    path.join(__dirname, '..', 'simple', 'Codigo.gs'), 'utf8');
+  const codigo = fs.readFileSync(CODIGO, 'utf8');
   const dialogo = fs.readFileSync(
     path.join(__dirname, '..', 'simple', 'dialogo.html'), 'utf8');
 
-  // El diálogo llama al servidor por nombre: un cambio de nombre sólo en un
-  // lado se manifestaría como un fallo mudo en pantalla.
+  // El diálogo llama al servidor por nombre: un cambio en un solo lado se
+  // manifestaría como un fallo mudo en pantalla.
   ['reconocerArchivo', 'insertarItems'].forEach((fn) => {
     assert.ok(dialogo.includes('.' + fn + '('), 'el diálogo debe llamar a ' + fn);
     assert.ok(new RegExp('function\\s+' + fn + '\\s*\\(').test(codigo),
@@ -184,6 +238,27 @@ prueba('Codigo.gs y dialogo.html se llaman por los mismos nombres', () => {
   });
   assert.ok(codigo.includes("createHtmlOutputFromFile('dialogo')"),
     'el archivo HTML tiene que llamarse "dialogo"');
+});
+
+prueba('el diálogo usa los campos que el servidor devuelve', () => {
+  const dialogo = fs.readFileSync(
+    path.join(__dirname, '..', 'simple', 'dialogo.html'), 'utf8');
+  // reconocerArchivo devuelve {archivo, items:[{descripcion, precio, seguro,
+  // archivo, clave}]}: el diálogo se apoya en todos ellos.
+  ['resultado.items', 'item.clave', 'item.seguro', 'item.descripcion',
+    'item.precio', 'item.archivo'].forEach((campo) => {
+    assert.ok(dialogo.includes(campo), 'falta el uso de ' + campo);
+  });
+});
+
+prueba('el diálogo admite varios archivos y los lee en serie', () => {
+  const dialogo = fs.readFileSync(
+    path.join(__dirname, '..', 'simple', 'dialogo.html'), 'utf8');
+  assert.ok(/id="archivo"[^>]*\bmultiple\b/.test(dialogo),
+    'el selector debe admitir varios archivos');
+  // En serie: cada OCR es una subida a Drive y lanzarlos a la vez agota cuota.
+  assert.ok(dialogo.includes('leerUno(archivos, i + 1)'),
+    'los archivos se encadenan uno tras otro');
 });
 
 // ------------------------------------------------------------------ fin

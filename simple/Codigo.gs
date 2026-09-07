@@ -84,29 +84,34 @@ function abrirDialogoOcr() {
 }
 
 /**
- * Recibe el archivo elegido en el diálogo, le pasa el OCR y devuelve los
- * productos encontrados. La llama dialogo.html.
+ * Recibe un archivo del diálogo, le pasa el OCR y devuelve lo que encuentre.
+ *
+ * No falla cuando un archivo no da resultados: con varios archivos en la
+ * misma tanda, uno ilegible no debe tumbar a los demás. El diálogo informa
+ * archivo por archivo.
  *
  * @param {string} base64 contenido del archivo
- * @param {string} nombre nombre original, sólo para nombrar el temporal
+ * @param {string} nombre nombre original
  * @param {string} tipo mime del archivo
- * @return {!Array<{descripcion: string, precio: number, seguro: boolean}>}
+ * @return {{archivo: string, items: !Array<!Object>}}
  */
 function reconocerArchivo(base64, nombre, tipo) {
   if (!base64) throw new Error('No llegó ningún archivo.');
+  const etiqueta = nombre || 'archivo';
 
   const contenido = Utilities.newBlob(
-    Utilities.base64Decode(base64), tipo || 'application/pdf', nombre || 'archivo');
+    Utilities.base64Decode(base64), tipo || 'application/pdf', etiqueta);
 
-  const texto = textoPorOcr_(contenido, nombre || 'archivo');
-  const items = extraerItems_(texto);
+  const items = extraerItems_(textoPorOcr_(contenido, etiqueta));
 
-  if (!items.length) {
-    throw new Error(
-      'No reconocí ninguna línea con descripción y precio. Si es una foto, ' +
-      'prueba con una más nítida y recortada a la tabla de precios.');
-  }
-  return items;
+  // La clave se calcula aquí para que el diálogo pueda marcar las repetidas
+  // sin duplicar esa regla en el navegador.
+  items.forEach(function (item) {
+    item.archivo = etiqueta;
+    item.clave = claveItem_(item);
+  });
+
+  return { archivo: etiqueta, items: items };
 }
 
 /**
@@ -176,9 +181,14 @@ function textoPorOcr_(contenido, nombre) {
 }
 
 /**
- * Escribe los productos elegidos a partir de la celda seleccionada: la
- * descripción en esa columna y el precio en la de al lado. La llama
- * dialogo.html.
+ * Añade los productos elegidos a la hoja, a partir de la celda seleccionada.
+ *
+ * Nunca sobrescribe: si la celda de partida ya tiene algo, baja hasta la
+ * primera libre; y si lo que viene debajo está ocupado, inserta las filas que
+ * hagan falta. Así una cotización con más ítems que filas disponibles entra
+ * entera sin desplazar mal el resto de la hoja.
+ *
+ * La llama dialogo.html.
  *
  * @param {!Array<{descripcion: string, precio: number}>} items
  * @return {string} mensaje para mostrar en el diálogo
@@ -188,15 +198,68 @@ function insertarItems(items) {
 
   const hoja = SpreadsheetApp.getActiveSheet();
   const celda = hoja.getActiveCell();
-  const filas = items.map(function (i) {
-    return [i.descripcion, i.precio];
-  });
+  const columna = celda.getColumn();
 
-  hoja.getRange(celda.getRow(), celda.getColumn(), filas.length, 2)
-    .setValues(filas);
+  if (columna + 1 > hoja.getMaxColumns()) {
+    throw new Error(
+      'Sitúate en una celda que tenga al menos una columna libre a la ' +
+      'derecha: la descripción va en esa columna y el precio en la siguiente.');
+  }
 
-  return filas.length + ' línea(s) escritas desde ' +
-    celda.getA1Notation() + '.';
+  const inicio = primeraFilaLibreDesde_(hoja, celda.getRow(), columna);
+  const cuantas = items.length;
+  const insertadas = asegurarEspacio_(hoja, inicio, columna, cuantas);
+
+  hoja.getRange(inicio, columna, cuantas, 2).setValues(
+    items.map(function (i) { return [i.descripcion, i.precio]; }));
+
+  const donde = hoja.getRange(inicio, columna).getA1Notation();
+  return cuantas + ' línea(s) añadidas desde ' + donde +
+    (insertadas ? ' (se insertaron ' + insertadas + ' filas nuevas).' : '.');
+}
+
+/**
+ * Primera fila libre en una columna, bajando desde una fila dada.
+ *
+ * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
+ * @param {number} desde
+ * @param {number} columna
+ * @return {number}
+ */
+function primeraFilaLibreDesde_(hoja, desde, columna) {
+  const max = hoja.getMaxRows();
+  if (desde > max) return desde;
+  // Una sola lectura del resto de la columna: recorrerla celda a celda sería
+  // lento en una hoja larga.
+  const valores = hoja.getRange(desde, columna, max - desde + 1, 1)
+    .getDisplayValues()
+    .map(function (fila) { return fila[0]; });
+  return desde + indiceLibre_(valores);
+}
+
+/**
+ * Deja libre el bloque donde se va a escribir, agrandando la hoja e
+ * insertando filas si hace falta.
+ *
+ * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
+ * @param {number} inicio
+ * @param {number} columna
+ * @param {number} cuantas
+ * @return {number} filas insertadas
+ */
+function asegurarEspacio_(hoja, inicio, columna, cuantas) {
+  const max = hoja.getMaxRows();
+  if (inicio + cuantas - 1 > max) {
+    hoja.insertRowsAfter(max, inicio + cuantas - 1 - max);
+  }
+
+  const bloque = hoja.getRange(inicio, columna, cuantas, 2).getDisplayValues();
+  if (!hayContenido_(bloque)) return 0;
+
+  // Se insertan tantas filas como líneas: el hueco queda exacto y no deja
+  // filas en blanco sueltas.
+  hoja.insertRowsBefore(inicio, cuantas);
+  return cuantas;
 }
 
 /**
@@ -212,7 +275,11 @@ function carpetaDeTrabajo_() {
 }
 
 // ===========================================================================
-// Reconocimiento de descripción y precio
+// LÓGICA PROBADA — inicio
+// ---------------------------------------------------------------------------
+// Todo lo que hay entre estos dos marcadores es código sin dependencias de
+// Google: test/parser.test.js lo extrae de este mismo archivo y lo ejecuta
+// con Node, así que las pruebas comprueban exactamente lo que corre aquí.
 // ===========================================================================
 
 /**
@@ -367,6 +434,48 @@ function extraerItems_(texto) {
   });
   return items;
 }
+
+/**
+ * Clave con la que se reconocen dos líneas iguales, para poder avisar de las
+ * repetidas cuando se leen varios archivos del mismo proveedor.
+ *
+ * @param {{descripcion: string, precio: number}} item
+ * @return {string}
+ */
+function claveItem_(item) {
+  return String(item.descripcion).toUpperCase().replace(/\s+/g, ' ').trim() +
+    '|' + Number(item.precio).toFixed(2);
+}
+
+/**
+ * Índice de la primera entrada vacía de una lista de valores de celda.
+ * @param {!Array<*>} valores
+ * @return {number} el índice, o la longitud si están todas ocupadas
+ */
+function indiceLibre_(valores) {
+  for (let i = 0; i < valores.length; i++) {
+    const v = valores[i] == null ? '' : String(valores[i]).trim();
+    if (v === '') return i;
+  }
+  return valores.length;
+}
+
+/**
+ * ¿Hay algo escrito en un bloque de celdas?
+ * @param {!Array<!Array<*>>} bloque
+ * @return {boolean}
+ */
+function hayContenido_(bloque) {
+  return bloque.some(function (fila) {
+    return fila.some(function (celda) {
+      return String(celda == null ? '' : celda).trim() !== '';
+    });
+  });
+}
+
+// ===========================================================================
+// LÓGICA PROBADA — fin
+// ===========================================================================
 
 // ===========================================================================
 // SCRIPT 2 — Generar el PDF para enviar
