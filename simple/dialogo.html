@@ -1,0 +1,247 @@
+<!--
+  Diálogo de "Leer precios de proveedor".
+
+  Se elige un PDF o una foto, se envía al script, y se muestran las líneas
+  reconocidas para revisarlas antes de escribir nada en la hoja. Las que el
+  reconocimiento no da por seguras llegan desmarcadas: el precio de esas
+  suele ser un número del propio nombre del producto.
+-->
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    color: #202124;
+    margin: 0;
+    padding: 16px;
+  }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  .ayuda { color: #5f6368; margin: 0 0 14px; }
+
+  .caja {
+    border: 2px dashed #c6cbd1;
+    border-radius: 6px;
+    padding: 18px;
+    text-align: center;
+    background: #fafbfc;
+  }
+  .caja input { font-size: 13px; }
+
+  button {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 16px;
+    border-radius: 4px;
+    border: 1px solid #1a73e8;
+    background: #1a73e8;
+    color: #fff;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secundario { background: #fff; color: #1a73e8; }
+
+  #estado { margin: 12px 0; min-height: 20px; }
+  .error { color: #c5221f; }
+  .ok { color: #1e8e3e; }
+
+  #resultado { display: none; }
+  .tabla-caja {
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    margin-bottom: 12px;
+  }
+  table { border-collapse: collapse; width: 100%; }
+  th {
+    position: sticky;
+    top: 0;
+    background: #f1f3f4;
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #5f6368;
+    padding: 7px 8px;
+    border-bottom: 1px solid #dadce0;
+  }
+  td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f1f3f4;
+    vertical-align: top;
+  }
+  td.precio { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.dudosa td { background: #fef7e0; }
+  .marca-dudosa {
+    color: #b06000;
+    font-size: 11px;
+    display: block;
+  }
+  .pie { display: flex; align-items: center; gap: 10px; }
+  .pie .cuenta { color: #5f6368; margin-right: auto; }
+</style>
+
+<h2>Leer precios de proveedor</h2>
+<p class="ayuda">
+  Elige el PDF o la foto que te envió el proveedor. Se reconocen la
+  descripción y el precio de cada línea; el resto lo escribes tú.
+</p>
+
+<div id="paso-archivo">
+  <div class="caja">
+    <input type="file" id="archivo" accept="image/*,application/pdf">
+    <p class="ayuda" style="margin:10px 0 0">
+      Cuanto más nítida y recortada esté la imagen, mejor sale.
+    </p>
+  </div>
+  <div id="estado"></div>
+  <button id="leer" disabled>Leer archivo</button>
+</div>
+
+<div id="resultado">
+  <div class="tabla-caja">
+    <table>
+      <thead>
+        <tr>
+          <th style="width:28px"><input type="checkbox" id="todos" checked></th>
+          <th>Descripción</th>
+          <th style="width:90px; text-align:right">Precio</th>
+        </tr>
+      </thead>
+      <tbody id="filas"></tbody>
+    </table>
+  </div>
+  <div class="pie">
+    <span class="cuenta" id="cuenta"></span>
+    <button class="secundario" id="otro">Otro archivo</button>
+    <button id="insertar">Insertar en la hoja</button>
+  </div>
+  <div id="estado2"></div>
+</div>
+
+<script>
+  var items = [];
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function estado(donde, texto, clase) {
+    var el = $(donde);
+    el.textContent = texto || '';
+    el.className = clase || '';
+  }
+
+  $('archivo').addEventListener('change', function () {
+    $('leer').disabled = !this.files.length;
+    estado('estado', '');
+  });
+
+  $('leer').addEventListener('click', function () {
+    var archivo = $('archivo').files[0];
+    if (!archivo) return;
+
+    $('leer').disabled = true;
+    estado('estado', 'Reconociendo… esto tarda unos segundos.');
+
+    var lector = new FileReader();
+    lector.onerror = function () {
+      $('leer').disabled = false;
+      estado('estado', 'No pude leer el archivo desde tu equipo.', 'error');
+    };
+    lector.onload = function (e) {
+      // Se envía sólo el contenido, sin la cabecera "data:...;base64,".
+      var base64 = String(e.target.result).split(',')[1];
+      google.script.run
+        .withSuccessHandler(mostrar)
+        .withFailureHandler(function (err) {
+          $('leer').disabled = false;
+          estado('estado', err.message || String(err), 'error');
+        })
+        .reconocerArchivo(base64, archivo.name, archivo.type);
+    };
+    lector.readAsDataURL(archivo);
+  });
+
+  function mostrar(encontrados) {
+    items = encontrados;
+    var cuerpo = $('filas');
+    cuerpo.innerHTML = '';
+
+    encontrados.forEach(function (item, i) {
+      var fila = document.createElement('tr');
+      if (!item.seguro) fila.className = 'dudosa';
+
+      var celdaMarca = document.createElement('td');
+      var marca = document.createElement('input');
+      marca.type = 'checkbox';
+      marca.checked = item.seguro;
+      marca.dataset.indice = String(i);
+      marca.addEventListener('change', contar);
+      celdaMarca.appendChild(marca);
+
+      var celdaDesc = document.createElement('td');
+      celdaDesc.textContent = item.descripcion;
+      if (!item.seguro) {
+        var nota = document.createElement('span');
+        nota.className = 'marca-dudosa';
+        nota.textContent = 'Sin decimales ni símbolo: revisa que el precio sea ése.';
+        celdaDesc.appendChild(nota);
+      }
+
+      var celdaPrecio = document.createElement('td');
+      celdaPrecio.className = 'precio';
+      celdaPrecio.textContent = item.precio.toFixed(2);
+
+      fila.appendChild(celdaMarca);
+      fila.appendChild(celdaDesc);
+      fila.appendChild(celdaPrecio);
+      cuerpo.appendChild(fila);
+    });
+
+    $('paso-archivo').style.display = 'none';
+    $('resultado').style.display = 'block';
+    contar();
+  }
+
+  function marcadas() {
+    var seleccion = [];
+    var marcas = $('filas').querySelectorAll('input[type=checkbox]');
+    for (var i = 0; i < marcas.length; i++) {
+      if (marcas[i].checked) seleccion.push(items[Number(marcas[i].dataset.indice)]);
+    }
+    return seleccion;
+  }
+
+  function contar() {
+    var n = marcadas().length;
+    $('cuenta').textContent = n + ' de ' + items.length + ' marcadas';
+    $('insertar').disabled = n === 0;
+  }
+
+  $('todos').addEventListener('change', function () {
+    var marcas = $('filas').querySelectorAll('input[type=checkbox]');
+    for (var i = 0; i < marcas.length; i++) marcas[i].checked = this.checked;
+    contar();
+  });
+
+  $('otro').addEventListener('click', function () {
+    $('resultado').style.display = 'none';
+    $('paso-archivo').style.display = 'block';
+    $('archivo').value = '';
+    $('leer').disabled = true;
+    estado('estado', '');
+    estado('estado2', '');
+  });
+
+  $('insertar').addEventListener('click', function () {
+    $('insertar').disabled = true;
+    estado('estado2', 'Escribiendo en la hoja…');
+    google.script.run
+      .withSuccessHandler(function (mensaje) {
+        estado('estado2', mensaje + ' Ya puedes cerrar.', 'ok');
+      })
+      .withFailureHandler(function (err) {
+        $('insertar').disabled = false;
+        estado('estado2', err.message || String(err), 'error');
+      })
+      .insertarItems(marcadas());
+  });
+</script>

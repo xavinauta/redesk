@@ -4,7 +4,7 @@
   "description": "Automatización de cotizaciones de REDESK en Google Sheets + Apps Script",
   "private": true,
   "scripts": {
-    "test": "node tools/empaquetar.js && node test/logica.test.js",
+    "test": "node tools/empaquetar.js && node test/logica.test.js && node test/parser.test.js",
     "push": "clasp push",
     "empaquetar": "node tools/empaquetar.js",
     "previsualizar": "node tools/previsualizar.js"
