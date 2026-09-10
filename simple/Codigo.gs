@@ -9,9 +9,13 @@
  *    los que quieres y se añaden desde la celda seleccionada.
  *
  * 2. REDESK ▸ Generar PDF para enviar
- *    Oculta las columnas COSTO y UTILIDAD, exporta la hoja a PDF tal como
- *    la ves y vuelve a mostrarlas. El PDF conserva tu diseño, tus logos y
- *    tus formatos, porque es tu propia hoja impresa.
+ *    Oculta las columnas COSTO y UTILIDAD y las líneas sin cantidad, exporta
+ *    la hoja a PDF tal como la ves y lo restaura todo. Guarda el PDF y una
+ *    copia de la hoja con el nombre del cliente, y ofrece un botón para
+ *    dejar el correo listo en Gmail.
+ *
+ * 3. REDESK ▸ Enviar proforma…
+ *    Lo mismo, pero yendo directo al correo.
  *
  * INSTALACIÓN
  *   1. Extensiones ▸ Apps Script.
@@ -45,8 +49,32 @@ const AJUSTES = {
    */
   COLUMNA_CANTIDAD: ['CANTIDAD', 'CANT', 'CANT.', 'QTY'],
 
-  /** Carpeta de Drive donde se guardan los PDF. Se crea sola. */
+  /** Carpeta de Drive donde se guardan el PDF y la copia. Se crea sola. */
   CARPETA_PDF: 'Proformas REDESK',
+
+  /**
+   * Hoja donde se anota cada cotización de proveedor consultada, con un
+   * enlace para volver a ella.
+   */
+  HOJA_REGISTROS: 'REGISTROS ARCHIVOS COTIZACION',
+
+  /**
+   * Carpeta donde queda el documento que Drive genera al leer un archivo
+   * subido desde el equipo. Ese documento es lo único enlazable —el archivo
+   * de tu disco no tiene dirección— y contiene la imagen original junto al
+   * texto reconocido, así que sirve para revisar de dónde salió cada precio.
+   *
+   * Ponlo en false para no dejar rastro: entonces el registro anota el
+   * nombre del archivo pero sin enlace.
+   */
+  CONSERVAR_ORIGEN: true,
+  CARPETA_ORIGENES: 'Cotizaciones proveedor consultadas',
+
+  /** Etiquetas con las que se busca el nombre del cliente en la hoja. */
+  ETIQUETA_CLIENTE: ['NOMBRE', 'CLIENTE', 'RAZON SOCIAL', 'SENOR', 'SENORES'],
+
+  /** Etiquetas con las que se busca el correo del cliente. */
+  ETIQUETA_EMAIL: ['E-MAIL', 'EMAIL', 'CORREO', 'MAIL', 'CORREO ELECTRONICO'],
 
   /** Idioma que se le indica al OCR. */
   IDIOMA_OCR: 'es',
@@ -65,6 +93,7 @@ function onOpen() {
     .createMenu('REDESK')
     .addItem('Leer precios de proveedor…', 'abrirDialogoOcr')
     .addItem('Generar PDF para enviar', 'generarPdfParaEnviar')
+    .addItem('Enviar proforma…', 'enviarProforma')
     .addToUi();
 }
 
@@ -134,11 +163,13 @@ function reconocerArchivo(base64, nombre, tipo) {
     tipo || 'application/octet-stream',
     etiqueta);
 
-  const items = esHojaDeCalculo_(tipo, etiqueta)
+  const lectura = esHojaDeCalculo_(tipo, etiqueta)
     ? itemsDeHojaSubida_(contenido, etiqueta)
     : itemsPorOcr_(contenido, etiqueta);
 
-  return { archivo: etiqueta, items: etiquetar_(items, etiqueta) };
+  registrarArchivo_(etiqueta, lectura.url, lectura.items.length);
+
+  return { archivo: etiqueta, items: etiquetar_(lectura.items, etiqueta) };
 }
 
 /**
@@ -165,10 +196,13 @@ function reconocerHojaPorUrl(url) {
   }
 
   const nombre = libro.getName();
-  return {
-    archivo: nombre,
-    items: etiquetar_(itemsDeLibro_(libro, nombre), nombre),
-  };
+  const items = itemsDeLibro_(libro, nombre);
+
+  // Una hoja de Google ya vive en Drive: se anota su propio enlace y no se
+  // guarda nada nuevo.
+  registrarArchivo_(nombre, libro.getUrl(), items.length);
+
+  return { archivo: nombre, items: etiquetar_(items, nombre) };
 }
 
 /**
@@ -201,18 +235,21 @@ function etiquetar_(items, etiqueta) {
 }
 
 /**
- * Sube una hoja de cálculo, la lee y borra la copia temporal.
+ * Sube una hoja de cálculo y la lee.
  * @param {!GoogleAppsScript.Base.Blob} contenido
  * @param {string} nombre
- * @return {!Array<!Object>}
+ * @return {{items: !Array<!Object>, url: string}}
  */
 function itemsDeHojaSubida_(contenido, nombre) {
   const id = subirConvertido_(contenido, nombre, MimeType.GOOGLE_SHEETS, {});
+  let items;
   try {
-    return itemsDeLibro_(SpreadsheetApp.openById(id), nombre);
-  } finally {
+    items = itemsDeLibro_(SpreadsheetApp.openById(id), nombre);
+  } catch (err) {
     borrarTemporal_(id);
+    throw err;
   }
+  return { items: items, url: conservarOrigen_(id, nombre) };
 }
 
 /**
@@ -256,17 +293,18 @@ function itemsDeLibro_(libro, nombreBase) {
  *
  * @param {!GoogleAppsScript.Base.Blob} contenido
  * @param {string} nombre
- * @return {!Array<!Object>}
+ * @return {{items: !Array<!Object>, url: string}}
  */
 function itemsPorOcr_(contenido, nombre) {
   const id = subirConvertido_(
-    contenido, 'OCR ' + nombre, MimeType.GOOGLE_DOCS,
+    contenido, nombre, MimeType.GOOGLE_DOCS,
     { ocrLanguage: AJUSTES.IDIOMA_OCR });
 
+  let items;
   try {
     const cuerpo = DocumentApp.openById(id).getBody();
 
-    const items = [];
+    items = [];
     for (let i = 0; i < cuerpo.getNumChildren(); i++) {
       const hijo = cuerpo.getChild(i);
       if (hijo.getType() !== DocumentApp.ElementType.TABLE) continue;
@@ -274,12 +312,13 @@ function itemsPorOcr_(contenido, nombre) {
         items.push(item);
       });
     }
-    if (items.length) return items;
-
-    return extraerItems_(cuerpo.getText());
-  } finally {
+    if (!items.length) items = extraerItems_(cuerpo.getText());
+  } catch (err) {
     borrarTemporal_(id);
+    throw err;
   }
+
+  return { items: items, url: conservarOrigen_(id, nombre) };
 }
 
 /**
@@ -354,6 +393,97 @@ function subirConvertido_(contenido, nombre, mimeDestino, parametros) {
       respuesta.getContentText().slice(0, 200));
   }
   return JSON.parse(respuesta.getContentText()).id;
+}
+
+/**
+ * Deja en Drive el documento que Drive mismo generó al leer el archivo, y
+ * devuelve su enlace.
+ *
+ * No se guarda ninguna copia del archivo original: lo que se conserva es el
+ * documento convertido, que se creaba de todas formas para poder leerlo y
+ * antes se tiraba. Es lo único enlazable, porque un archivo del disco no
+ * tiene dirección a la que apuntar, y trae la imagen o el PDF junto al texto
+ * reconocido.
+ *
+ * @param {string} id documento intermedio
+ * @param {string} nombre nombre con el que quedará
+ * @return {string} el enlace, o cadena vacía si no se conserva
+ */
+function conservarOrigen_(id, nombre) {
+  if (!AJUSTES.CONSERVAR_ORIGEN) {
+    borrarTemporal_(id);
+    return '';
+  }
+  try {
+    const archivo = DriveApp.getFileById(id);
+    archivo.setName(nombre);
+    archivo.moveTo(carpetaJuntoALaHoja_(AJUSTES.CARPETA_ORIGENES));
+    return archivo.getUrl();
+  } catch (err) {
+    // Sin enlace se sigue anotando el archivo: es mejor un registro sin
+    // enlace que ningún registro.
+    return '';
+  }
+}
+
+/**
+ * Anota en la hoja de registros de dónde salió la información: cuándo, qué
+ * archivo, cuántas líneas dio y un enlace para volver a revisarlo.
+ *
+ * @param {string} nombre
+ * @param {string} url
+ * @param {number} cuantas
+ */
+function registrarArchivo_(nombre, url, cuantas) {
+  const hoja = hojaRegistros_();
+  const fila = hoja.getLastRow() + 1;
+
+  hoja.getRange(fila, 1, 1, 3).setValues([[new Date(), nombre, cuantas]]);
+  hoja.getRange(fila, 1).setNumberFormat('dd/MM/yyyy HH:mm');
+
+  if (!url) return;
+
+  // Enlace como texto enriquecido y no con una fórmula HYPERLINK: en una
+  // hoja con coma decimal los argumentos se separan con punto y coma, y la
+  // fórmula daría #ERROR!.
+  hoja.getRange(fila, 4).setRichTextValue(
+    SpreadsheetApp.newRichTextValue()
+      .setText('Abrir')
+      .setLinkUrl(url)
+      .build());
+}
+
+/**
+ * Hoja de registros, creada con sus encabezados si aún no existe.
+ * @return {!GoogleAppsScript.Spreadsheet.Sheet}
+ */
+function hojaRegistros_() {
+  const libro = SpreadsheetApp.getActiveSpreadsheet();
+  const existente = libro.getSheetByName(AJUSTES.HOJA_REGISTROS);
+  if (existente) return existente;
+
+  const hoja = libro.insertSheet(AJUSTES.HOJA_REGISTROS);
+  hoja.getRange(1, 1, 1, 4)
+    .setValues([['Fecha', 'Archivo', 'Líneas', 'Ver origen']])
+    .setFontWeight('bold');
+  hoja.setFrozenRows(1);
+  [150, 340, 70, 100].forEach(function (ancho, i) {
+    hoja.setColumnWidth(i + 1, ancho);
+  });
+  return hoja;
+}
+
+/**
+ * Devuelve una carpeta junto a la hoja de cálculo, creándola si no existe.
+ * @param {string} nombre
+ * @return {!GoogleAppsScript.Drive.Folder}
+ */
+function carpetaJuntoALaHoja_(nombre) {
+  const padres = DriveApp.getFileById(
+    SpreadsheetApp.getActiveSpreadsheet().getId()).getParents();
+  const raiz = padres.hasNext() ? padres.next() : DriveApp.getRootFolder();
+  const existente = raiz.getFoldersByName(nombre);
+  return existente.hasNext() ? existente.next() : raiz.createFolder(nombre);
 }
 
 /**
@@ -456,11 +586,7 @@ function asegurarEspacio_(hoja, inicio, columna, cuantas) {
  * @return {!GoogleAppsScript.Drive.Folder}
  */
 function carpetaDeTrabajo_() {
-  const padres = DriveApp.getFileById(
-    SpreadsheetApp.getActiveSpreadsheet().getId()).getParents();
-  const raiz = padres.hasNext() ? padres.next() : DriveApp.getRootFolder();
-  const existente = raiz.getFoldersByName('_ocr_temp');
-  return existente.hasNext() ? existente.next() : raiz.createFolder('_ocr_temp');
+  return carpetaJuntoALaHoja_('_ocr_temp');
 }
 
 // ===========================================================================
@@ -815,6 +941,48 @@ function letras_(texto) {
 }
 
 /**
+ * Busca una etiqueta en la hoja y devuelve el primer valor no vacío que haya
+ * a su derecha, en la misma fila.
+ *
+ * Es como se saca el nombre y el correo del cliente sin depender de en qué
+ * celda concreta los tenga cada plantilla.
+ *
+ * @param {!Array<!Array<*>>} datos
+ * @param {!Array<string>} etiquetas
+ * @return {string} el valor, o cadena vacía si no se encuentra
+ */
+function valorJuntoA_(datos, etiquetas) {
+  const buscadas = etiquetas.map(normalizar_);
+
+  for (let f = 0; f < datos.length; f++) {
+    const fila = datos[f] || [];
+    for (let c = 0; c < fila.length; c++) {
+      const valor = normalizar_(fila[c]).replace(/:$/, '');
+      if (buscadas.indexOf(valor) === -1) continue;
+
+      for (let d = c + 1; d < fila.length; d++) {
+        const contenido = normalizarTexto_(fila[d]);
+        if (contenido) return contenido;
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Deja un texto en condiciones de ser nombre de archivo en Drive.
+ * @param {string} texto
+ * @return {string}
+ */
+function sanearNombre_(texto) {
+  return String(texto)
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 150);
+}
+
+/**
  * Extrae el identificador de una hoja a partir de su enlace.
  * @param {string} url
  * @return {string} el identificador, o cadena vacía si no se reconoce
@@ -925,32 +1093,99 @@ function hayContenido_(bloque) {
  * Exporta la hoja activa a PDF sin las columnas COSTO ni UTILIDAD, y sin las
  * líneas de ítem que estén sin cantidad.
  *
+ * Guarda dos archivos con el nombre del cliente: el PDF para enviar y una
+ * copia de la hoja como respaldo de cómo quedó esa proforma.
+ *
  * Se exporta la propia hoja en vez de recomponer el documento en otro sitio:
  * así el PDF conserva el diseño, los logos y los formatos que ya tienes, sin
  * conversiones de por medio que puedan estropearlos.
  */
 function generarPdfParaEnviar() {
   ejecutar_(function () {
-    const hoja = SpreadsheetApp.getActiveSheet();
-    const datos = leerCuadricula_(hoja);
-
-    const columnas = ocultarColumnas_(hoja, AJUSTES.COLUMNAS_OCULTAS);
-    const filas = ocultarFilasVacias_(hoja, datos);
-
-    let archivo;
-    try {
-      // Sin esto la exportación puede leer la hoja antes de que se apliquen
-      // las columnas y las filas ocultas.
-      SpreadsheetApp.flush();
-      archivo = guardarPdf_(hoja);
-    } finally {
-      columnas.forEach(function (c) { hoja.showColumns(c.columna); });
-      filas.forEach(function (f) { hoja.showRows(f); });
-      SpreadsheetApp.flush();
-    }
-
-    mostrarEnlace_(archivo, resumen_(columnas, filas), columnas.length > 0);
+    const salida = emitirProforma_();
+    mostrarResultado_(salida);
   });
+}
+
+/**
+ * Genera el PDF y la copia de la hoja, y devuelve ambos.
+ * @return {{pdf: !GoogleAppsScript.Drive.File,
+ *           copia: ?GoogleAppsScript.Drive.File,
+ *           cliente: string, aviso: string, correcto: boolean}}
+ */
+function emitirProforma_() {
+  const hoja = SpreadsheetApp.getActiveSheet();
+  const datos = leerCuadricula_(hoja);
+  const cliente = valorJuntoA_(datos, AJUSTES.ETIQUETA_CLIENTE);
+  const nombre = nombreDeArchivo_(cliente, hoja);
+  const carpeta = carpetaPdf_();
+
+  const columnas = ocultarColumnas_(hoja, AJUSTES.COLUMNAS_OCULTAS);
+  const filas = ocultarFilasVacias_(hoja, datos);
+
+  let pdf;
+  try {
+    // Sin esto la exportación puede leer la hoja antes de que se apliquen
+    // las columnas y las filas ocultas.
+    SpreadsheetApp.flush();
+    pdf = guardarPdf_(hoja, nombre + '.pdf', carpeta);
+  } finally {
+    columnas.forEach(function (c) { hoja.showColumns(c.columna); });
+    filas.forEach(function (f) { hoja.showRows(f); });
+    SpreadsheetApp.flush();
+  }
+
+  return {
+    pdf: pdf,
+    copia: guardarCopiaLibro_(nombre, carpeta),
+    cliente: cliente,
+    aviso: resumen_(columnas, filas),
+    correcto: columnas.length > 0,
+  };
+}
+
+/**
+ * Nombre con el que se guardan el PDF y la copia: el del cliente.
+ *
+ * Si no se encuentra el cliente en la hoja se recurre al nombre de la hoja
+ * con la fecha, para no dejar archivos sin identificar.
+ *
+ * @param {string} cliente
+ * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
+ * @return {string}
+ */
+function nombreDeArchivo_(cliente, hoja) {
+  if (cliente) return sanearNombre_(cliente);
+
+  const fecha = Utilities.formatDate(
+    new Date(), SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(),
+    'yyyy-MM-dd');
+  return sanearNombre_(hoja.getName() + ' ' + fecha);
+}
+
+/**
+ * Guarda una copia de la hoja de cálculo con el nombre del cliente.
+ *
+ * @param {string} nombre
+ * @param {!GoogleAppsScript.Drive.Folder} carpeta
+ * @return {?GoogleAppsScript.Drive.File} la copia, o null si no se pudo
+ */
+function guardarCopiaLibro_(nombre, carpeta) {
+  try {
+    const original = DriveApp.getFileById(
+      SpreadsheetApp.getActiveSpreadsheet().getId());
+
+    // Una copia anterior del mismo cliente se manda a la papelera, para no
+    // acabar con "Cliente", "Cliente (1)", "Cliente (2)"…
+    const previas = carpeta.getFilesByName(nombre);
+    while (previas.hasNext()) previas.next().setTrashed(true);
+
+    return original.makeCopy(nombre, carpeta);
+  } catch (err) {
+    // El PDF es lo que se envía: si falla la copia, no se pierde el trabajo.
+    console.error('No pude guardar la copia de la hoja: ' + err);
+    return null;
+  }
 }
 
 /**
@@ -1092,9 +1327,11 @@ function buscarColumnas_(hoja, nombres) {
  * Archivo ▸ Descargar ▸ PDF, así que respeta el diseño de la hoja.
  *
  * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
+ * @param {string} nombre nombre del archivo, con extensión
+ * @param {!GoogleAppsScript.Drive.Folder} carpeta
  * @return {!GoogleAppsScript.Drive.File}
  */
-function guardarPdf_(hoja) {
+function guardarPdf_(hoja, nombre, carpeta) {
   const libro = SpreadsheetApp.getActiveSpreadsheet();
   const parametros = {
     format: 'pdf',
@@ -1117,24 +1354,20 @@ function guardarPdf_(hoja) {
     return clave + '=' + encodeURIComponent(parametros[clave]);
   }).join('&');
 
-  const url = 'https://docs.google.com/spreadsheets/d/' + libro.getId() +
-    '/export?' + consulta;
+  const respuesta = UrlFetchApp.fetch(
+    'https://docs.google.com/spreadsheets/d/' + libro.getId() +
+    '/export?' + consulta,
+    {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true,
+    });
 
-  const respuesta = UrlFetchApp.fetch(url, {
-    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
-    muteHttpExceptions: true,
-  });
   if (respuesta.getResponseCode() !== 200) {
     throw new Error('Google no devolvió el PDF (código ' +
       respuesta.getResponseCode() + '). Revisa que el manifiesto ' +
       'appsscript.json esté pegado y vuelve a autorizar el script.');
   }
 
-  const nombre = nombrePdf_(hoja);
-  const carpeta = carpetaPdf_();
-
-  // Si ya existe un PDF con el mismo nombre, se manda a la papelera para no
-  // quedarse con dos versiones de la misma proforma.
   const previos = carpeta.getFilesByName(nombre);
   while (previos.hasNext()) previos.next().setTrashed(true);
 
@@ -1142,79 +1375,175 @@ function guardarPdf_(hoja) {
 }
 
 /**
- * Nombre del PDF: el del cliente si se encuentra en la hoja, y si no, el de
- * la hoja con la fecha.
- *
- * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
- * @return {string}
- */
-function nombrePdf_(hoja) {
-  const cliente = buscarValorJuntoA_(hoja, ['NOMBRE', 'CLIENTE', 'RAZON SOCIAL']);
-  const fecha = Utilities.formatDate(
-    new Date(), SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(),
-    'yyyy-MM-dd');
-
-  const base = cliente ? cliente : hoja.getName() + ' ' + fecha;
-  return base.replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ')
-    .trim().slice(0, 150) + '.pdf';
-}
-
-/**
- * Busca una etiqueta en las primeras filas y devuelve el primer valor no
- * vacío que haya a su derecha, en la misma fila.
- *
- * @param {!GoogleAppsScript.Spreadsheet.Sheet} hoja
- * @param {!Array<string>} etiquetas
- * @return {string} el valor, o cadena vacía si no se encuentra
- */
-function buscarValorJuntoA_(hoja, etiquetas) {
-  const filas = Math.min(AJUSTES.FILAS_A_REVISAR, hoja.getMaxRows());
-  const columnas = hoja.getMaxColumns();
-  const datos = hoja.getRange(1, 1, filas, columnas).getDisplayValues();
-  const buscadas = etiquetas.map(normalizar_);
-
-  for (let f = 0; f < filas; f++) {
-    for (let c = 0; c < columnas; c++) {
-      const valor = normalizar_(datos[f][c]).replace(/:$/, '');
-      if (buscadas.indexOf(valor) === -1) continue;
-      for (let d = c + 1; d < columnas; d++) {
-        const contenido = String(datos[f][d] || '').trim();
-        if (contenido) return contenido;
-      }
-    }
-  }
-  return '';
-}
-
-/**
  * Carpeta de Drive donde se guardan los PDF, junto a la hoja.
  * @return {!GoogleAppsScript.Drive.Folder}
  */
 function carpetaPdf_() {
-  const padres = DriveApp.getFileById(
-    SpreadsheetApp.getActiveSpreadsheet().getId()).getParents();
-  const raiz = padres.hasNext() ? padres.next() : DriveApp.getRootFolder();
-  const existente = raiz.getFoldersByName(AJUSTES.CARPETA_PDF);
-  return existente.hasNext()
-    ? existente.next()
-    : raiz.createFolder(AJUSTES.CARPETA_PDF);
+  return carpetaJuntoALaHoja_(AJUSTES.CARPETA_PDF);
 }
 
 /**
- * Muestra el enlace al PDF recién creado.
- * @param {!GoogleAppsScript.Drive.File} archivo
- * @param {string} aviso
- * @param {boolean} correcto si se ocultaron las columnas esperadas
+ * Muestra el resultado con enlaces a los dos archivos y el botón de envío.
+ *
+ * @param {{pdf: !GoogleAppsScript.Drive.File,
+ *          copia: ?GoogleAppsScript.Drive.File,
+ *          cliente: string, aviso: string, correcto: boolean}} salida
  */
-function mostrarEnlace_(archivo, aviso, correcto) {
-  const color = correcto ? '#1D7A4C' : '#C4161C';
-  const html = HtmlService.createHtmlOutput(
-    '<div style="font-family:Arial,sans-serif;font-size:13px;line-height:1.6">' +
-    '<p><b>PDF listo.</b></p>' +
-    '<p><a href="' + archivo.getUrl() + '" target="_blank">' +
-    archivo.getName().replace(/[<>&]/g, '') + '</a></p>' +
-    '<p style="color:' + color + '">' + aviso.replace(/[<>&]/g, '') + '</p>' +
-    '<p style="color:#666">Ábrelo, descárgalo y adjúntalo al correo.</p>' +
-    '</div>').setWidth(480).setHeight(230);
-  SpreadsheetApp.getUi().showModalDialog(html, 'Generar PDF');
+function mostrarResultado_(salida) {
+  const datos = {
+    idPdf: salida.pdf.getId(),
+    nombrePdf: salida.pdf.getName(),
+    urlPdf: salida.pdf.getUrl(),
+    urlCopia: salida.copia ? salida.copia.getUrl() : '',
+    aviso: salida.aviso,
+    correcto: salida.correcto,
+  };
+
+  const html = HtmlService
+    .createHtmlOutput(paginaResultado_(datos))
+    .setWidth(480)
+    .setHeight(330);
+  SpreadsheetApp.getUi().showModalDialog(
+    html, salida.cliente ? 'Proforma · ' + salida.cliente : 'Proforma');
+}
+
+/**
+ * Arma el diálogo del resultado.
+ *
+ * Va aquí y no en un archivo HTML aparte para no añadir un cuarto archivo
+ * que pegar en el editor. `google.script.run` funciona igual.
+ *
+ * @param {!Object} datos
+ * @return {string}
+ */
+function paginaResultado_(datos) {
+  const color = datos.correcto ? '#1e8e3e' : '#c5221f';
+
+  return '<style>' +
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:13px;' +
+    'color:#202124;margin:0;padding:16px;line-height:1.6}' +
+    'a{color:#1a73e8}' +
+    'button{font-family:inherit;font-size:13px;padding:8px 16px;' +
+    'border-radius:4px;border:1px solid #1a73e8;background:#1a73e8;' +
+    'color:#fff;cursor:pointer}' +
+    'button:disabled{opacity:.5;cursor:default}' +
+    '.archivos{background:#f8f9fa;border-radius:4px;padding:10px 14px;' +
+    'margin:12px 0}' +
+    '.aviso{color:' + color + '}' +
+    '#estado{margin-top:12px;min-height:18px}' +
+    '.error{color:#c5221f}' +
+    '</style>' +
+    '<p><b>Proforma lista.</b></p>' +
+    '<div class="archivos">' +
+    '<div>PDF: <a href="' + datos.urlPdf + '" target="_blank">' +
+    escaparHtml_(datos.nombrePdf) + '</a></div>' +
+    (datos.urlCopia
+      ? '<div>Copia de la hoja: <a href="' + datos.urlCopia +
+        '" target="_blank">abrir</a></div>'
+      : '') +
+    '</div>' +
+    '<p class="aviso">' + escaparHtml_(datos.aviso) + '</p>' +
+    '<button id="enviar">Enviar proforma</button>' +
+    '<div id="estado"></div>' +
+    '<script>' +
+    'var ID=' + JSON.stringify(datos.idPdf) + ';' +
+    'var e=document.getElementById("enviar");' +
+    'var s=document.getElementById("estado");' +
+    'e.addEventListener("click",function(){' +
+    'e.disabled=true;s.className="";s.textContent="Preparando el correo…";' +
+    'google.script.run.withSuccessHandler(function(r){' +
+    's.innerHTML=\'Borrador listo en Gmail con el PDF adjunto. \'+' +
+    '\'<a href="\'+r.url+\'" target="_blank">Abrirlo para revisar y enviar</a>\'' +
+    '+(r.correo?"":" Ponle el destinatario: no encontré el correo del cliente en la hoja.");' +
+    '}).withFailureHandler(function(err){' +
+    'e.disabled=false;s.className="error";' +
+    's.textContent=err.message||String(err);' +
+    '}).crearBorradorProforma(ID);' +
+    '});' +
+    '<\/script>';
+}
+
+/**
+ * Escapa un texto para insertarlo en el HTML del diálogo.
+ * @param {string} texto
+ * @return {string}
+ */
+function escaparHtml_(texto) {
+  return String(texto == null ? '' : texto)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ===========================================================================
+// Enviar la proforma por Gmail
+// ===========================================================================
+
+/**
+ * Genera la proforma y deja el correo listo en Gmail, en un solo paso.
+ * Es la entrada del menú; el botón del diálogo llama directamente a
+ * crearBorradorProforma con el PDF que se acaba de generar.
+ */
+function enviarProforma() {
+  ejecutar_(function () {
+    const salida = emitirProforma_();
+    const borrador = crearBorradorProforma(salida.pdf.getId());
+
+    const html = HtmlService.createHtmlOutput(
+      '<div style="font-family:Arial,sans-serif;font-size:13px;' +
+      'line-height:1.6;padding:4px">' +
+      '<p><b>Borrador listo en Gmail</b>, con el PDF adjunto.</p>' +
+      '<p><a href="' + borrador.url + '" target="_blank">' +
+      'Abrirlo para revisar y enviar</a></p>' +
+      (borrador.correo
+        ? '<p>Para: ' + escaparHtml_(borrador.correo) + '</p>'
+        : '<p style="color:#c5221f">Ponle el destinatario: no encontré el ' +
+          'correo del cliente en la hoja.</p>') +
+      '</div>').setWidth(440).setHeight(200);
+    SpreadsheetApp.getUi().showModalDialog(html, 'Enviar proforma');
+  });
+}
+
+/**
+ * Crea en Gmail el borrador de la proforma, con el PDF adjunto y dirigido al
+ * cliente. La llama el botón del diálogo.
+ *
+ * Se deja como borrador y no se envía: el correo sale cuando tú le das a
+ * enviar, después de revisarlo.
+ *
+ * @param {string} idPdf
+ * @return {{url: string, correo: string}}
+ */
+function crearBorradorProforma(idPdf) {
+  const hoja = SpreadsheetApp.getActiveSheet();
+  const datos = leerCuadricula_(hoja);
+  const cliente = valorJuntoA_(datos, AJUSTES.ETIQUETA_CLIENTE);
+  const correo = valorJuntoA_(datos, AJUSTES.ETIQUETA_EMAIL);
+  const pdf = DriveApp.getFileById(idPdf);
+
+  const asunto = 'Proforma' + (cliente ? ' - ' + cliente : '');
+  const saludo = cliente
+    ? 'Estimados ' + cliente + ':'
+    : 'Estimados:';
+  const cuerpo = [
+    saludo,
+    '',
+    'Adjunto la proforma solicitada.',
+    '',
+    'Quedo atento a cualquier consulta.',
+    '',
+    'Atentamente,',
+  ].join('\n');
+
+  // Un correo sin destinatario es válido como borrador: si el cliente no
+  // tiene correo en la hoja, se pone a mano antes de enviar.
+  const borrador = GmailApp.createDraft(correo, asunto, cuerpo,
+    { attachments: [pdf.getBlob()] });
+
+  return {
+    url: 'https://mail.google.com/mail/u/0/#drafts/' +
+      borrador.getMessage().getId(),
+    correo: correo,
+  };
 }

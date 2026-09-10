@@ -392,6 +392,42 @@ prueba('esFinDeItems_ reconoce dónde acaba la tabla', () => {
     'un producto que empieza por TOTAL no cierra la tabla');
 });
 
+// --------------------------------- datos del cliente en la hoja
+
+prueba('valorJuntoA_ saca el cliente y el correo de la plantilla', () => {
+  const datos = [
+    ['PROFORMA', '', '', ''],
+    ['Nombre:', 'IMPORTADORA TOMEBAMBA', 'FECHA:', '06/09/2026'],
+    ['E-Mail:', 'sistemas@cumpleanos.com.ec', '', ''],
+  ];
+  assert.strictEqual(
+    L.valorJuntoA_(datos, ['NOMBRE', 'CLIENTE']), 'IMPORTADORA TOMEBAMBA');
+  assert.strictEqual(
+    L.valorJuntoA_(datos, ['E-MAIL', 'CORREO']), 'sistemas@cumpleanos.com.ec');
+});
+
+prueba('valorJuntoA_ salta las celdas vacías entre etiqueta y valor', () => {
+  assert.strictEqual(
+    L.valorJuntoA_([['Cliente:', '', '', 'TECOPESCA C.A.']], ['CLIENTE']),
+    'TECOPESCA C.A.');
+});
+
+prueba('valorJuntoA_ devuelve vacío si no encuentra la etiqueta', () => {
+  assert.strictEqual(L.valorJuntoA_([['a', 'b']], ['CLIENTE']), '');
+  assert.strictEqual(L.valorJuntoA_([], ['CLIENTE']), '');
+  // Una etiqueta sin nada a la derecha tampoco vale.
+  assert.strictEqual(L.valorJuntoA_([['Cliente:', '', '']], ['CLIENTE']), '');
+});
+
+prueba('sanearNombre_ deja el nombre del cliente usable en Drive', () => {
+  assert.strictEqual(
+    L.sanearNombre_('IMPORTADORA CUMPLEAÑOS PALACIOS CORDERO CIA LTDA'),
+    'IMPORTADORA CUMPLEAÑOS PALACIOS CORDERO CIA LTDA');
+  assert.strictEqual(L.sanearNombre_('TECOPESCA / C.A.'), 'TECOPESCA - C.A.');
+  assert.strictEqual(L.sanearNombre_('  doble   espacio  '), 'doble espacio');
+  assert.ok(L.sanearNombre_('X'.repeat(400)).length <= 150);
+});
+
 // -------------------------------------------------- diálogo y servidor
 
 prueba('Codigo.gs y dialogo.html se llaman por los mismos nombres', () => {
@@ -443,6 +479,44 @@ prueba('el diálogo acepta también hojas de cálculo y enlaces', () => {
     'el diálogo debe poder leer una hoja por su enlace');
   assert.ok(/function\s+reconocerHojaPorUrl\s*\(/.test(codigo),
     'Codigo.gs debe definir reconocerHojaPorUrl');
+});
+
+prueba('el botón de enviar del diálogo llama a una función que existe', () => {
+  // El diálogo del resultado se arma como texto dentro de Codigo.gs, así que
+  // no hay quien avise si el nombre deja de coincidir.
+  const codigo = fs.readFileSync(CODIGO, 'utf8');
+  assert.ok(codigo.includes('.crearBorradorProforma(ID)'),
+    'el diálogo debe llamar a crearBorradorProforma');
+  assert.ok(/function\s+crearBorradorProforma\s*\(/.test(codigo),
+    'Codigo.gs debe definir crearBorradorProforma');
+  // Se deja borrador, nunca se envía solo.
+  assert.ok(codigo.includes('GmailApp.createDraft('),
+    'el correo se deja como borrador');
+  assert.ok(!/GmailApp\.send/.test(codigo),
+    'nada debe enviarse sin que la persona lo revise');
+});
+
+prueba('el manifiesto pide permiso para redactar en Gmail', () => {
+  const manifiesto = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', 'simple', 'appsscript.json'), 'utf8'));
+  assert.ok(
+    manifiesto.oauthScopes.includes(
+      'https://www.googleapis.com/auth/gmail.compose'),
+    'hace falta gmail.compose para crear el borrador');
+  assert.ok(
+    !manifiesto.oauthScopes.some((p) => p === 'https://mail.google.com/'),
+    'no hace falta el permiso total de Gmail: sólo se redactan borradores');
+});
+
+prueba('no se guarda ninguna copia de los archivos del proveedor', () => {
+  // Lo que se conserva es el documento que Drive genera al leer, que se
+  // creaba de todas formas; el archivo del equipo no se duplica.
+  const codigo = fs.readFileSync(CODIGO, 'utf8');
+  assert.ok(!/createFile\(\s*contenido/.test(codigo),
+    'el contenido subido no debe escribirse en Drive');
+  assert.ok(/function\s+conservarOrigen_\s*\(/.test(codigo));
+  assert.ok(codigo.includes('CONSERVAR_ORIGEN'),
+    'debe poder desactivarse desde AJUSTES');
 });
 
 prueba('ya no hace falta el servicio avanzado de Drive', () => {
